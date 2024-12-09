@@ -1,0 +1,4105 @@
+require "libjade-dilithium-arm/src/libjade/dilithium5/keccakf1600_pqm4.jinc"
+require "arrays.jinc"
+require "libjade-dilithium-arm/src/libjade/dilithium5/fips202.jinc"
+
+inline fn montyR(reg u32 r0 r1 q) -> reg u32
+{
+	reg u32 q_inv, tmp1;
+	q_inv = 3955247103;
+
+	tmp1 = #MUL(r0, q_inv);
+	_, r1 = #SMLAL(r0, r1, tmp1, q);
+	return r1;
+}
+
+inline fn schoolbookmul_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b, reg u32 zeta) -> reg ptr u32[4]
+{
+	reg u32 r0, r1, k0, k1, k2, k3, b0, b1, b2, b3, q;
+	q = 18433;
+	
+	k0 = (32s)a.[0];
+	k1 = (32s)a.[4];
+	k2 = (32s)a.[8];
+	k3 = (32s)a.[12];
+	b0 = (32s)b.[0];
+	b1 = (32s)b.[4];
+	b2 = (32s)b.[8];
+	b3 = (32s)b.[12];
+
+	r0, r1 = #SMULL(k1, b3);
+	r1, r0 = #SMLAL(r1, r0, k2, b2);
+	r1, r0 = #SMLAL(r1, r0, k3, b1);
+	r1  = montyR(r1, r0, q);
+	r0, r1 = #SMULL(r1, zeta);
+	r1, r0 = #SMLAL(r1, r0, k0, b0);
+	r1  = montyR(r1, r0, q);
+	d.[0] = r1;
+
+	r0, r1 = #SMULL(k2, b3);
+	r1, r0 = #SMLAL(r1, r0, k3, b2);
+	r1  = montyR(r1, r0, q);
+	r0, r1 = #SMULL(r1, zeta);
+	r1, r0 = #SMLAL(r1, r0, k0, b1);
+	r1, r0 = #SMLAL(r1, r0, k1, b0);
+	r1  = montyR(r1, r0, q);
+	d.[4] = r1;
+
+	r0, r1 = #SMULL(k3, b3);
+	r1 = montyR(r1, r0, q);
+	r0, r1 = #SMULL(r1, zeta);
+	r1, r0 = #SMLAL(r1, r0, k0, b2);
+	r1, r0 = #SMLAL(r1, r0, k1, b1);
+	r1, r0 = #SMLAL(r1, r0, k2, b0);
+	r1  = montyR(r1, r0, q);
+	d.[8] = r1;
+
+	r0, r1 = #SMULL(k0, b3);
+	r1, r0 = #SMLAL(r1, r0, k1, b2);
+	r1, r0 = #SMLAL(r1, r0, k2, b1);
+	r1, r0 = #SMLAL(r1, r0, k3, b0);
+	r1 = montyR(r1, r0, q);
+	d.[12] = r1;
+	
+	return d;
+}
+
+inline fn improvedMul_2_jazz(reg ptr u32[256] d, reg ptr u32[512] a) -> reg ptr u32[256]
+{
+	reg u32 zeta, neg_zeta;
+
+	reg ptr u16[256] mq18433_GM_p;
+	mq18433_GM_p = mq18433_GM;
+
+	() = #spill(d, a, mq18433_GM_p);
+	
+	inline int i, index, ctr0, ctr1, ctr2;
+	index = 64;
+	ctr0 = 0;
+	ctr1 = 0;
+	ctr2 = 256;
+	for i = 0 to 32
+	{
+		() = #unspill(mq18433_GM_p, a, d);
+		zeta = (32u)mq18433_GM_p.[u16 index+ctr0];
+
+		reg ptr u32[4] input1;
+		input1 = a[ctr1:4];
+		reg ptr u32[4] input2;
+		input2 = a[ctr2:4];
+		reg ptr u32[4] output;
+		output = d[ctr1:4];
+		output = schoolbookmul_2_jazz(output, input1, input2, zeta);
+		() = #unspill(d, a);
+		d[ctr1:4] = output;
+
+		ctr1 += 4;
+		ctr2 += 4;
+
+		input1 = a[ctr1:4];
+		input2 = a[ctr2:4];
+		output = d[ctr1:4];
+		neg_zeta = 0-zeta;
+		() = #spill(d);
+		output = schoolbookmul_2_jazz(output, input1, input2, neg_zeta);
+		() = #unspill(d);
+		d[ctr1:4] = output;
+		() = #spill(d);
+
+		ctr0 += 2;
+		ctr1 += 4;
+		ctr2 += 4;
+	}
+	return d;
+}
+
+inline fn montymul2_jazz(reg u32 x y q q_inv) -> reg u32
+{
+    reg u32 tmp0, tmp1;
+
+	x, tmp0 = #SMULL(x, y);
+	tmp1 = #MUL(tmp0, q_inv);
+	_, x = #SMLAL(tmp0, x, tmp1, q);
+
+    return x;
+}
+
+inline fn setsmall_jazz(reg u32 x q) -> reg u32
+{
+    reg u32 result, temp;
+
+    result = 0 - x;
+    temp = q & (result >> 16);
+    result += temp;
+    result = q - result;
+
+    return result;
+}
+
+inline fn snorm_jazz(reg u32 x q) -> reg u32
+{
+    reg u32 result, temp;
+
+    temp = (9216 - x); // q_half - x
+	temp = q & (temp>>16);
+    result = x - temp;
+
+    return result;
+}
+
+inline fn memset2(reg u32 d length)
+{
+	reg u32 null, n;
+	null = 0;
+	n = d + length;
+	while (d < n)
+	{
+		(u8)[d] = null;
+		d+=1;
+	}
+}
+
+inline fn bpMul32_jazz(reg u32 x, reg u32 y) -> reg u32, reg u32
+{
+	reg u32 x0, x1, x2, x3, y0, y1, y2, y3, temp_1, temp_2, z_1, z_2;
+	stack u32 s_z0_1, s_z0_2, s_z1_1, s_z1_2, s_z2_1, s_z2_2;
+
+	temp_1 = x;
+	x0 = temp_1 & 0x11111111;
+	x1 = temp_1 & 0x22222222;
+	x2 = temp_1 & 0x44444444;
+	x3 = temp_1 & 0x88888888;
+
+	y0 = y & 0x11111111;
+	y1 = y & 0x22222222;
+	y2 = y & 0x44444444;
+	y3 = y & 0x88888888;
+	
+	z_1, z_2 = #UMULL(x0, y0);
+	temp_1, temp_2 = #UMULL(x1, y3);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x2, y2);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x3, y1);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	z_1 &= 0x11111111;
+	z_2 &= 0x11111111;
+	s_z0_1 = z_1;
+	s_z0_2 = z_2;
+
+	z_1, z_2 = #UMULL(x0, y1);
+	temp_1, temp_2 = #UMULL(x1, y0);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x2, y3);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x3, y2);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	z_1 &= 0x22222222;
+	z_2 &= 0x22222222;
+	s_z1_1 = z_1;
+	s_z1_2 = z_2;
+	
+	z_1, z_2 = #UMULL(x0, y2);
+	temp_1, temp_2 = #UMULL(x1, y1);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x2, y0);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x3, y3);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	z_1 &= 0x44444444;
+	z_2 &= 0x44444444;
+	s_z2_1 = z_1;
+	s_z2_2 = z_2;
+	
+	z_1, z_2 = #UMULL(x0, y3);
+	temp_1, temp_2 = #UMULL(x1, y2);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x2, y1);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	temp_1, temp_2 = #UMULL(x3, y0);
+	z_1 ^= temp_1;
+	z_2 ^= temp_2;
+	z_1 &= 0x88888888;
+	z_2 &= 0x88888888;
+
+	x0 = s_z0_1;
+	y0 = s_z0_2;
+	x1 = s_z1_1;
+	y1 = s_z1_2;
+	x2 = s_z2_1;
+	y2 = s_z2_2;
+
+	z_1 |= x0;
+	z_1 |= x1;
+	z_1 |= x2;
+
+	z_2 |= y0;
+	z_2 |= y1;
+	z_2 |= y2;
+	
+	return z_2, z_1;
+}
+
+inline fn memset(reg u32 d)
+{
+	reg u32 null;
+	null = 0;
+	(u32)[d] = null;
+	(u32)[d+4] = null;
+	(u32)[d+8] = null;
+	(u32)[d+12] = null;
+	(u32)[d+16] = null;
+	(u32)[d+20] = null;
+	(u32)[d+24] = null;
+	(u32)[d+28] = null;
+}
+
+inline fn test(reg u32 hi p_odd lo_low lo_high) -> reg u32
+{
+	reg u32 r, tlo0_low, tlo0_high, tlo_low, tlo_high, temp, carry, diff_high, cc, thi, thi0;
+	reg bool cf;
+	reg ptr u32[32] arr;
+	arr = array;
+
+	r = 0;
+
+	tlo0_low = arr[0];
+	tlo0_high = arr[1];
+	tlo_low = arr[2];
+	tlo_high = arr[3];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	thi0 = 0x4D70;
+	thi = 0x6bfb;
+	thi &= p_odd;
+	thi ^= thi0;
+	temp = hi - thi;
+	temp -= cc;
+	temp >>= 31;
+	r += temp;
+
+	tlo0_low = arr[4];
+	tlo0_high = arr[5];
+	tlo_low = arr[6];
+	tlo_high = arr[7];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	thi0 = 0x0F80;
+	thi = 0xb7a;
+	thi &= p_odd;
+	thi ^= thi0;
+	temp = hi - thi;
+	temp -= cc;
+	temp >>= 31;
+	r += temp;
+
+	tlo0_low = arr[8];
+	tlo0_high = arr[9];
+	tlo_low = arr[10];
+	tlo_high = arr[11];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	thi0 = 0x0144;
+	thi = 0x105;
+	thi &= p_odd;
+	thi ^= thi0;
+	temp = hi - thi;
+	temp -= cc;
+	temp >>= 31;
+	r += temp;
+
+	tlo0_low = arr[12];
+	tlo0_high = arr[13];
+	tlo_low = arr[14];
+	tlo_high = arr[15];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	thi0 = 0x000A;
+	thi = 0x000b;
+	thi &= p_odd;
+	thi ^= thi0;
+	temp = hi - thi;
+	temp -= cc;
+	temp >>= 31;
+	r += temp;
+
+	reg u32 hinz;
+	hinz = (hi-1);
+	hinz = hinz >> 31;
+
+	tlo0_low = arr[16];
+	tlo0_high = arr[17];
+	tlo_low = arr[18];
+	tlo_high = arr[19];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	temp = hinz & cc;
+	r += temp;
+
+	tlo0_low = arr[20];
+	tlo0_high = arr[21];
+	tlo_low = arr[22];
+	tlo_high = arr[23];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	temp = hinz & cc;
+	r += temp;
+
+	tlo0_low = arr[24];
+	tlo0_high = arr[25];
+	tlo_low = arr[26];
+	tlo_high = arr[27];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, tlo0_high);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	temp = hinz & cc;
+	r += temp;
+
+	tlo0_low = arr[28];
+	tlo_low = arr[29];
+	tlo_high = 1;
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	tlo_high &= p_odd;
+	tlo_high = #EOR(tlo_high, 1);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - tlo_high;
+	diff_high = diff_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	temp = hinz & cc;
+	r += temp;
+
+	tlo0_low = arr[30];
+	tlo_low = arr[31];
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, tlo0_low);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	temp = hinz & cc;
+	r += temp;
+
+	tlo_low = 0x7b;
+	tlo_low &= p_odd;
+	tlo_low = #EOR(tlo_low, 0x7b);
+	_, _, cf, _ = #CMP(lo_low, tlo_low);
+	carry = 1;
+	carry = 0 if cf;
+	diff_high = lo_high - carry;
+	_, _, cf, _ = #CMP(lo_high, diff_high);
+	cc = 1;
+	cc = 0 if cf;
+	temp = hinz & cc;
+	r += temp;
+
+	temp = r;
+	return temp;
+}
+
+inline fn unnamed_jazz(reg u32 ps s1 h1buf) -> reg u32
+{
+	reg u32 nm, z, temp1, y, lim, minus_512;
+	nm = #ASR(ps, 31);
+	nm = #MVN(nm);
+	lim = 512;
+	minus_512 = 4294966784;
+	inline int u;
+	for u = 0 to 256
+	{
+		z = (32s)(u16)[s1+2*u];
+		z = z ^ nm;
+		z = z - nm;
+		temp1 = (32u)(u8)[h1buf+(u >> 3)];
+		temp1 = temp1 >> (u & 7);
+		temp1 &= 1;
+		z = z + temp1;
+		y = z >>s 1;
+		lim = 0 if y <s minus_512;
+		lim = 0 if y >=s 512;
+		(u16)[s1+2*u] = y;
+	}
+	ps = lim;
+	return ps;
+}
+
+// ================ SHAKE-related functions ================
+
+fn _toBitInterleaving(reg u32 x0 x1 s0 s1) 
+                           -> reg u32, reg u32 
+{
+  s0, s1 = __toBitInterleaving(x0,x1,s0,s1);
+  return s0, s1;
+}
+
+fn _stateTopqm4(reg ptr u32[KECCAK_state] state) 
+   -> reg ptr u32[KECCAK_state] 
+{
+  reg u32 s0 s1 d0 d1;
+  inline int i;
+  for i = 0 to 25 {
+    s0 = 0;
+    s1 = 0;
+    d0 = state[2*i];
+    d1 = state[2*i+1];
+    s0, s1 = _toBitInterleaving(d0, d1, s0, s1);
+    state[2*i] = s0;
+    state[2*i+1] = s1;
+  }
+  return state;
+} 
+
+fn _fromBitInterleaving(reg u32 x0 x1)
+                             -> reg u32, reg u32
+{
+  x0, x1 = __fromBitInterleaving(x0, x1);
+  return x0, x1;
+}
+
+fn _pqm4Tostate(reg ptr u32[KECCAK_state] state) 
+   -> reg ptr u32[KECCAK_state] 
+{
+  reg u32 s0 s1;
+  inline int i;
+  for i = 0 to 25 {
+    s0 = state[2*i];
+    s1 = state[2*i+1];
+    s0, s1 = _fromBitInterleaving(s0, s1);
+    state[2*i] = s0;
+    state[2*i+1] = s1;
+  }
+  return state;
+}
+
+inline fn _shake256_inc_absorb_mem(reg ptr u32[25*2] pstate, reg u32 pos, reg u32 m, reg u32 mlen) -> reg ptr u32[25*2], reg u32
+{
+  reg u32 t s aux;
+  aux = 136 - pos;
+  if (aux <= mlen) { // mlen = 16
+    while (pos < 136) { 
+      #declassify t = (u32)[m];
+      s = pstate.[pos];
+      s ^= t;
+      pstate.[pos] = s;
+      pos += 4; m += 4;
+      mlen -= 4;      
+    } 
+    while {
+      () = #spill(m, mlen);
+      pstate = _stateTopqm4(pstate);      
+	  pstate = _KeccakF1600_StatePermute(pstate);
+	  pstate = _pqm4Tostate(pstate);
+      () = #unspill(m, mlen);
+      pos = 0;
+    } 
+    // FIXME: it will be good to be able to write (SHAKE256_RATE < mlen)
+    (mlen > 136) 
+    {
+      while (pos < 136) { 
+        #declassify t = (u32)[m];
+        s = pstate.[pos];
+        s ^= t;
+        pstate.[pos] = s;
+        pos += 4; m += 4;
+      }
+      mlen -= 136;
+    }
+  }
+  // Invariant mlen < SHAKE256_RATE - pos 
+  while (mlen > 0) {
+    #declassify t = (32u)(u8)[m];
+    s = (32u)pstate[u8 pos];
+    s ^= t;
+    pstate[u8 pos] = s;
+    pos += 1; m += 1; mlen -= 1;
+  }
+  return pstate, pos;
+}
+
+inline fn _shake256_inc_absorb_mem_jazz(reg ptr u32[25*2] pstate, reg u32 pos, reg ptr u8[32] m, reg u32 mlen) -> reg ptr u32[25*2], reg u32
+{
+  reg u32 t s aux ctr;
+  ctr = 0;
+  aux = 136 - pos;
+  if (aux <= mlen) { // mlen = 16
+    while (pos < 136) { 
+      t = m.[u32 ctr];
+      s = pstate.[pos];
+      s ^= t;
+      pstate.[pos] = s;
+      pos += 4; ctr += 4;
+      mlen -= 4;      
+    } 
+    () = #spill(m, mlen, ctr);
+    pstate = _stateTopqm4(pstate);      
+	pstate = _KeccakF1600_StatePermute(pstate);
+	pstate = _pqm4Tostate(pstate);
+    () = #unspill(m, mlen, ctr);
+    pos = 0;
+  }
+  
+  // Invariant mlen < SHAKE256_RATE - pos 
+  while (mlen > 0) {
+    t = (32u)m[u8 ctr];
+    s = (32u)pstate[u8 pos];
+    s ^= t;
+    pstate[u8 pos] = s;
+    pos += 1; ctr += 1; mlen -= 1;
+  }
+  return pstate, pos;
+}
+
+inline fn _shake256_inc_absorb_mem_adapted(reg ptr u32[25*2] pstate, reg u32 pos, reg ptr u8[4] pm, reg u32 mlen) -> reg ptr u32[25*2], reg u32
+{
+  reg u32 t s temp;
+  // Invariant mlen < SHAKE256_RATE - pos 
+  temp = 0;
+  while (mlen > 0) {
+    //t = (32u)(u8)[m];
+	t = (32u)pm[u8 temp]; 
+    s = (32u)pstate[u8 pos];
+    s ^= t;
+    pstate[u8 pos] = s;
+    pos += 1; temp += 1; mlen -= 1;
+  }
+  return pstate, pos;
+}
+
+inline fn _shake256_inc_absorb_mem_adapted2(reg ptr u32[25*2] pstate, reg u32 pos, reg ptr u8[41] pm, reg u32 mlen) -> reg ptr u32[25*2], reg u32
+{
+  reg u32 t s temp;
+  // Invariant mlen < SHAKE256_RATE - pos 
+  temp = 0;
+  while (mlen > 0) {
+    //t = (32u)(u8)[m];
+	t = (32u)pm[u8 temp];
+    s = (32u)pstate[u8 pos];
+    s ^= t;
+    pstate[u8 pos] = s;
+    pos += 1; temp += 1; mlen -= 1;
+  }
+  return pstate, pos;
+}
+
+inline fn _shake256_inc_absorb_mem_adapted4(reg ptr u32[25*2] pstate, reg u32 pos, reg ptr u8[112] pm, reg u32 mlen) -> reg ptr u32[25*2], reg u32
+{
+  reg u32 t s temp;
+  // Invariant mlen < SHAKE256_RATE - pos 
+  temp = 0;
+  while (mlen > 0) {
+    //t = (32u)(u8)[m];
+	t = (32u)pm[u8 temp];
+    s = (32u)pstate[u8 pos];
+    s ^= t;
+    pstate[u8 pos] = s;
+    pos += 1; temp += 1; mlen -= 1;
+  }
+  return pstate, pos;
+}
+
+inline fn shake_init_inject_16_jazz(reg ptr u32[25*2] state, reg ptr u8[112] priv) -> reg ptr u32[25*2]
+{
+	reg u32 val1, val2, temp;
+
+	temp = 0;
+
+	// Init
+	inline int i;
+	// Set only to zero where necessary. Start at 20 because we inject 64+14=78 Byte => 19,5 words
+	for i = 0 to 50 
+	{
+		state[i] = temp;
+	}
+	
+	// Inject hm
+	val1 = priv[u32 0];
+	val2 = priv[u32 1];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[0] = val1; 
+	state[1] = val2; 
+	val1 = priv[u32 2];
+	val2 = priv[u32 3];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[2] = val1; 
+	state[3] = val2; 
+
+	return state;
+}
+
+inline fn shake_inject_1_jazz(reg ptr u32[25*2] state, reg u32 m) -> reg ptr u32[25*2]
+{
+	reg u32 val1, val2, s1;
+	
+	// Inject hm
+	s1 = 0x1F00; // Add first finalize constant
+  	m ^= s1;
+	val1, val2 = __toBitInterleaving(m, 0, 0, 0);
+	state[4] = val1; 
+	state[5] = val2; 
+
+	return state;
+}
+
+inline fn shake_init_inject_64_jazz(reg ptr u32[25*2] state, reg ptr u8[64] hm) -> reg ptr u32[25*2]
+{
+	reg u32 val1, val2, temp;
+
+	temp = 0;
+
+	// Init
+	inline int i;
+	// Set only to zero where necessary. Start at 20 because we inject 64+14=78 Byte => 19,5 words
+	for i = 0 to 50 
+	{
+		state[i] = temp;
+	}
+	
+	// Inject hm
+	val1 = hm[u32 0];
+	val2 = hm[u32 1];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[0] = val1; 
+	state[1] = val2; 
+	val1 = hm[u32 2];
+	val2 = hm[u32 3];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[2] = val1; 
+	state[3] = val2; 
+	val1 = hm[u32 4];
+	val2 = hm[u32 5];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[4] = val1; 
+	state[5] = val2; 
+	val1 = hm[u32 6];
+	val2 = hm[u32 7];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[6] = val1; 
+	state[7] = val2; 
+	val1 = hm[u32 8];
+	val2 = hm[u32 9];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[8] = val1; 
+	state[9] = val2; 
+	val1 = hm[u32 10];
+	val2 = hm[u32 11];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[10] = val1; 
+	state[11] = val2; 
+	val1 = hm[u32 12];
+	val2 = hm[u32 13];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[12] = val1; 
+	state[13] = val2; 
+	val1 = hm[u32 14];
+	val2 = hm[u32 15];
+	val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+	state[14] = val1; 
+	state[15] = val2; 
+
+	return state;
+}
+
+inline fn shake256_inject_14_jazz(reg ptr u32[25*2] pstate, reg ptr u32[10] pm) -> reg ptr u32[25*2]
+{
+  reg u32 val0, val1, val2, val3, temp;
+
+  val0 = pm[0];
+  val1 = pm[1];
+  val2 = pm[2];
+  val3 = (32u) pm.[u16 12];
+  val0, val1 = __toBitInterleaving(val0, val1, 0, 0);
+  temp = 0x1F0000; // Add first finalize constant
+  val3 ^= temp;
+  val2, val3 = __toBitInterleaving(val2, val3, 0, 0);
+  pstate[16] = val0;
+  pstate[17] = val1;
+  pstate[18] = val2;
+  pstate[19] = val3;
+
+  return pstate;
+}
+
+inline fn shake256_inject_14_jazz_2(reg ptr u32[25*2] pstate, reg ptr u32[10] pm) -> reg ptr u32[25*2]
+{
+  reg u32 val0, val1, val2, val3, val4, s2, s1;
+
+  val0 = 0;
+  val1 = pm[0];
+  s1 = pstate[20];
+  s2 = pstate[21];
+  val0, val1 = __toBitInterleaving(val0, val1, s1, s2);
+  pstate[20] = val0;
+  pstate[21] = val1;
+
+  val1 = pm[1];
+  val2 = pm[2];
+  val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+  pstate[22] = val1;
+  pstate[23] = val2;
+
+  val3 = (32u)pm.[u16 12];
+  val4 = 0;
+  s1 = 0x1F0000; // Add first finalize constant
+  val3 ^= s1;
+  val3, val4 = __toBitInterleaving(val3, val4, 0, 0);
+  pstate[24] = val3;
+  pstate[25] = val4;
+
+  return pstate;
+}
+
+inline fn shake256_inject_16_jazz(reg ptr u32[25*2] pstate, reg ptr u32[28] priv) -> reg ptr u32[25*2]
+{
+  reg u32 val1, val2;
+
+  val1 = priv[0];
+  val2 = priv[1];
+  val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+  pstate[16] = val1;
+  pstate[17] = val2;
+
+  val1 = priv[2];
+  val2 = priv[3];
+  val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+  pstate[18] = val1;
+  pstate[19] = val2;
+
+  return pstate;
+}
+
+inline fn shake256_inject_4_jazz(reg ptr u32[25*2] pstate, reg ptr u32[1] tbuf) -> reg ptr u32[25*2]
+{
+  reg u32 val1, val2;
+
+  val1 = tbuf[0];
+  val2 = 0;
+  val1, val2 = __toBitInterleaving(val1, val2, 0, 0);
+  pstate[20] = val1;
+  pstate[21] = val2;
+
+  return pstate;
+}
+
+inline fn shake256_inc_finalize(reg ptr u32[25*2] state) -> reg ptr u32[25*2]
+{
+  reg u32 val;
+  val = 0x80;
+  state[u8 135] = (8u) val;
+
+  return state;
+}
+
+inline fn _shake256_inc_finalize(reg ptr u32[25*2] state, reg u32 i) -> reg ptr u32[25*2]
+{
+  reg u32 t0 t1;
+  
+  t0 = (32u) state[u8 (int)i];
+  t0 ^= 0x1f;
+  state[u8 (int)i] = (8u) t0;
+
+  t0 = (32u) state[u8 135];  
+  t1 = 0x80;
+  t0 ^= t1;
+  state[u8 135] = (8u) t0;
+
+  return state;
+}
+
+inline fn keccak_extract_bytes_16(reg ptr u32[50] pstate, reg ptr u32[16] poutstate, reg u32 start, reg u32 len, reg u32 offset) -> reg ptr u32[16], reg u32
+{
+	reg u32 ctr, start1, offset1, r1, r2, x1, x2;
+	ctr = start+len;
+	start1 = start + 1;
+	while (start < ctr)
+	{
+		r1 = pstate[start];
+		r2 = pstate[start1];
+		x1, x2 = _fromBitInterleaving(r1, r2);
+		offset1 = offset + 1;
+		poutstate[offset] = x1;
+		poutstate[offset1] = x2;
+		start += 2;
+		start1 += 2;
+		offset += 2;
+	}
+	return poutstate, offset;
+}
+
+inline fn keccak_inc_squeeze_16(reg ptr u32[16] poutstate, reg ptr u32[50] pstate, reg u32 pos) -> reg ptr u32[50], reg ptr u32[16], reg u32
+{
+	reg u32 len, outlen, offset;
+	outlen = 16;
+	offset = 0;
+	
+	if (outlen < pos)
+	{
+		len = outlen;
+	}
+	else
+	{
+		len = pos;
+	}
+
+	poutstate, offset = keccak_extract_bytes_16(pstate, poutstate, 34-pos, len, offset);
+	//offset += len;
+	outlen -= len;
+	pos -= len;
+	
+	if (outlen > 0)
+	{
+		() = #spill(poutstate, outlen, offset);   
+		pstate = _KeccakF1600_StatePermute(pstate);
+		() = #unspill(poutstate, outlen, offset); 
+		len = outlen;
+		poutstate, _ = keccak_extract_bytes_16(pstate, poutstate, 0, len, offset);
+		pos = 34 - len;
+	}
+
+	return pstate, poutstate, pos;
+}
+
+inline fn keccak_squeeze_32(reg ptr u32[50] pstate2) -> reg ptr u32[50]
+{
+	reg u32 r1, r2, x1, x2;
+	r1 = pstate2[0];
+	r2 = pstate2[1];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[0] = x1;
+	pstate2[1] = x2;
+	r1 = pstate2[2];
+	r2 = pstate2[3];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[2] = x1;
+	pstate2[3] = x2;
+	r1 = pstate2[4];
+	r2 = pstate2[5];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[4] = x1;
+	pstate2[5] = x2;
+	r1 = pstate2[6];
+	r2 = pstate2[7];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[6] = x1;
+	pstate2[7] = x2;
+	r1 = pstate2[8];
+	r2 = pstate2[9];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[8] = x1;
+	pstate2[9] = x2;
+	r1 = pstate2[10];
+	r2 = pstate2[11];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[10] = x1;
+	pstate2[11] = x2;
+	r1 = pstate2[12];
+	r2 = pstate2[13];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[12] = x1;
+	pstate2[13] = x2;
+	r1 = pstate2[14];
+	r2 = pstate2[15];
+	x1, x2 = _fromBitInterleaving(r1, r2);
+	pstate2[14] = x1;
+	pstate2[15] = x2;
+	return pstate2;
+}
+
+inline fn keccak_extract_bytes(reg ptr u32[50] pstate, reg ptr u32[10] poutstate, reg u32 start, reg u32 len, reg u32 offset) -> reg ptr u32[10], reg u32
+{	
+	reg u32 ctr, start1, offset1, r1, r2, x1, x2;
+	ctr = start+len;
+	start1 = start + 1;
+	while (start < ctr)
+	{
+		r1 = pstate[start];
+		r2 = pstate[start1];
+		x1, x2 = _fromBitInterleaving(r1, r2);
+		offset1 = offset + 1;
+		poutstate[offset] = x1;
+		poutstate[offset1] = x2;
+		start += 2;
+		start1 += 2;
+		offset += 2;
+	}
+	return poutstate, offset;
+}
+
+inline fn keccak_inc_squeeze_10(reg ptr u32[10] poutstate, reg ptr u32[50] pstate, reg u32 pos) -> reg ptr u32[50], reg ptr u32[10], reg u32
+{
+	reg u32 len, offset, outlen;
+	offset = 0;
+	outlen = 10;
+	
+	if (outlen < pos)
+	{
+		len = outlen;
+	}
+	else
+	{
+		len = pos;
+	}
+
+	poutstate, offset = keccak_extract_bytes(pstate, poutstate, 34-pos, len, offset);
+	outlen -= len;
+	pos -= len;
+	
+	if (outlen > 0)
+	{
+		() = #spill(poutstate, outlen, offset);   
+		pstate = _KeccakF1600_StatePermute(pstate);
+		() = #unspill(poutstate, outlen, offset); 
+		len = outlen;
+		poutstate, _ = keccak_extract_bytes(pstate, poutstate, 0, len, offset);
+		pos = 34 - len;
+	}
+
+	return pstate, poutstate, pos;
+}
+
+inline fn keccak_extract_bytes_4(reg ptr u32[50] pstate, reg ptr u32[10] poutstate, reg u32 start, reg u32 len, reg u32 offset) -> reg ptr u32[10], reg u32
+{
+	reg u32 ctr, start1, offset1, r1, r2, x1, x2;
+	ctr = start+len;
+	start1 = start + 1;
+	while (start < ctr)
+	{
+		r1 = pstate[start];
+		r2 = pstate[start1];
+		x1, x2 = _fromBitInterleaving(r1, r2);
+		offset1 = offset + 1;
+		poutstate[offset] = x1;
+		poutstate[offset1] = x2;
+		start += 2;
+		start1 += 2;
+		offset += 2;
+	}
+	return poutstate, offset;
+}
+
+inline fn keccak_inc_squeeze_4(reg ptr u32[10] poutstate, reg ptr u32[50] pstate, reg u32 pos) -> reg ptr u32[50], reg ptr u32[10], reg u32
+{
+	reg u32 len, outlen, offset;
+	outlen = 4;
+	offset = 0;
+	
+	if (outlen < pos)
+	{
+		len = outlen;
+	}
+	else
+	{
+		len = pos;
+	}
+
+	poutstate, offset = keccak_extract_bytes_4(pstate, poutstate, 34-pos, len, offset);
+	//offset += len;
+	outlen -= len;
+	pos -= len;
+	
+	if (outlen > 0)
+	{
+		//pstate = _stateTopqm4(pstate);
+		() = #spill(poutstate, outlen, offset);   
+		pstate = _KeccakF1600_StatePermute(pstate);
+		//pstate = _pqm4Tostate(pstate);
+		() = #unspill(poutstate, outlen, offset); 
+		len = outlen;
+		poutstate, _ = keccak_extract_bytes_4(pstate, poutstate, 0, len, offset);
+		pos = 34 - len;
+	}
+
+	return pstate, poutstate, pos;
+}
+
+inline fn shake_init_injectx2_flip_extract_2_jazz(reg ptr u32[16] hm, reg u32 sm, reg ptr u8[32] hpub, reg u32 mlen) -> reg ptr u32[16]
+{	
+	reg u32 pos, hpub_len, temp;
+	stack u32[25*2] state;
+  	reg ptr u32[25*2] pstate;
+  	pstate = state;
+	sm = sm;
+	mlen = mlen;
+	hm = hm;
+	hpub = hpub;
+	() = #spill(hm, hpub);
+
+	temp = 0;
+	inline int i;
+	for i = 0 to 50
+	{
+		pstate[i] = temp;
+	}
+
+	pos = 0;
+	pstate, pos = _shake256_inc_absorb_mem(pstate, pos, sm, mlen);
+
+	hpub_len = 16;
+	() = #unspill(hpub);
+	pstate, pos = _shake256_inc_absorb_mem_jazz(pstate, pos, hpub, hpub_len);
+	pstate = _shake256_inc_finalize(pstate, pos);	
+	pstate = _stateTopqm4(pstate);
+	pstate = _KeccakF1600_StatePermute(pstate);
+	pstate = _pqm4Tostate(pstate);
+	
+	reg u32 t, index;
+	index = 0;
+	() = #unspill(hm);
+	while (index < 16)
+	{
+        t = (32u)pstate[index];
+		hm[index] = t;
+		index+=1;
+    }
+	hm = hm;
+	return hm;
+}
+
+inline fn shake_init_injectx4_flip_extract_jazz(reg ptr u32[10] salt, reg ptr u8[64] hm, reg ptr u8[112] priv, reg u32 attempt) -> reg ptr u32[10]
+{
+	stack u32[25*2] state;
+  	reg ptr u32[25*2] pstate;
+  	pstate = state;
+	() = #spill(salt, attempt, priv);
+	
+	pstate = shake_init_inject_64_jazz(pstate, hm); // inject hm. pos = 64
+	() = #unspill(priv);
+	pstate = shake256_inject_16_jazz(pstate, priv); // inject priv. pos = 80
+	
+	stack u8[4] tbuf;
+  	reg ptr u8[4] ptbuf;
+  	ptbuf = tbuf;
+
+	() = #unspill(attempt);
+	reg u32 temp;
+	temp = attempt;
+	ptbuf[0] = temp;
+	temp >>= 8;
+	ptbuf[1] = temp;
+	temp >>= 8;
+	ptbuf[2] = temp;
+	temp >>= 8;
+	ptbuf[3] = temp;
+
+	pstate = shake256_inject_4_jazz(pstate, ptbuf);
+
+	() = #unspill(salt);
+	pstate = shake256_inject_14_jazz_2(pstate, salt); // inject salt. pos = 84
+
+	pstate = shake256_inc_finalize(pstate);
+	
+    _, salt, _ = keccak_inc_squeeze_4(salt, pstate, 0);
+
+	return salt;
+}
+
+inline fn shake_init_injectx2_flip_extract_jazz(reg ptr u32[16] h0, reg ptr u8[64] hm, reg ptr u8[40] salt) -> reg ptr u32[16]
+{
+	stack u32[25*2] state;
+  	reg ptr u32[25*2] pstate;
+  	pstate = state;
+	() = #spill(salt, h0);
+	pstate = shake_init_inject_64_jazz(pstate, hm); // inject hm. pos = 64
+	() = #unspill(salt);
+  	pstate = shake256_inject_14_jazz(pstate, salt); // inject salt. pos = 78
+	pstate = shake256_inc_finalize(pstate);
+	() = #unspill(h0);
+	_, h0, _ = keccak_inc_squeeze_16(h0, pstate, 0);
+
+	return h0;
+}
+// =========================================================
+
+inline fn regenfg8_2_jazz(reg ptr u8[256] f, reg ptr u8[256] g, reg ptr u8[112] priv) -> reg ptr u8[256], reg ptr u8[256]
+{
+	f = f; g = g; priv = priv;
+	() = #spill(f, g, priv);
+	reg u32 temp, temp1, temp2, temp3, temp4, temp5, temp6, temp7, q0, q1, mask1, mask2;
+	stack u32[25*2] state;
+  	reg ptr u32[25*2] pstate;
+  	pstate = state;
+
+	stack u32[25*2] state2;
+  	reg ptr u32[25*2] pstate2;
+  	pstate2 = state2;
+
+	() = #unspill(priv);
+	pstate = shake_init_inject_16_jazz(pstate, priv);
+	() = #spill(pstate);
+	
+	inline int j;
+	for j = 0 to 4
+	{
+		() = #unspill(pstate);
+		pstate2 = #copy(pstate);
+		pstate2 = shake_inject_1_jazz(pstate2, j);
+		pstate2 = shake256_inc_finalize(pstate2);
+		pstate2 = _KeccakF1600_StatePermute(pstate2);
+		pstate2 = keccak_squeeze_32(pstate2);
+		
+		mask1 = 0x33333333;
+		mask2 = 0x55555555;
+		
+		inline int u;
+		for u = 0 to 4
+		{
+			q0 = pstate2[u<<1];
+			q1 = pstate2[(u<<1)+1];
+			
+			temp = mask2 & (q0 >> 1);
+			temp2 = q0 & mask2;
+			q0 = temp2 + temp;
+			temp = mask1 & (q0 >> 2);
+			temp2 = q0 & mask1;
+			q0 = temp2 + temp;
+			
+			temp = mask2 & (q1 >> 1);
+			temp2 = q1 & mask2;
+			q1 = temp2 + temp;
+			temp = mask1 & (q1 >> 2);
+			temp2 = q1 & mask1;
+			q1 = temp2 + temp;
+
+			reg u32 mask;
+			mask = 0x0F;
+
+			temp = q0 & mask;
+			temp -= 2;
+			temp1 = mask & (q0 >> 4);
+			temp1 -= 2;
+			temp2 = mask & (q0 >> 8);
+			temp2 -= 2;
+			temp3 = mask & (q0 >> 12);
+			temp3 -= 2;
+			temp4 = mask & (q0 >> 16);
+			temp4 -= 2;
+			temp5 = mask & (q0 >> 20);
+			temp5 -= 2;
+			temp6 = mask & (q0 >> 24);
+			temp6 -= 2;
+			temp7 = mask & (q0 >> 28);
+			temp7 -= 2;
+			() = #unspill(f);
+			f.[(u<<6)+(j<<4)+0] = (32u) temp;
+			f.[(u<<6)+(j<<4)+1] = (32u) temp1;
+			f.[(u<<6)+(j<<4)+2] = (32u) temp2;
+			f.[(u<<6)+(j<<4)+3] = (32u) temp3;
+			f.[(u<<6)+(j<<4)+4] = (32u) temp4;
+			f.[(u<<6)+(j<<4)+5] = (32u) temp5;
+			f.[(u<<6)+(j<<4)+6] = (32u) temp6;
+			f.[(u<<6)+(j<<4)+7] = (32u) temp7;
+
+			temp = q1 & mask;
+			temp -= 2;
+			temp1 = mask & (q1 >> 4);
+			temp1 -= 2;
+			temp2 = mask & (q1 >> 8);
+			temp2 -= 2;
+			temp3 = mask & (q1 >> 12);
+			temp3 -= 2;
+			temp4 = mask & (q1 >> 16);
+			temp4 -= 2;
+			temp5 = mask & (q1 >> 20);
+			temp5 -= 2;
+			temp6 = mask & (q1 >> 24);
+			temp6 -= 2;
+			temp7 = mask & (q1 >> 28);
+			temp7 -= 2;
+			f.[(u<<6)+(j<<4)+8] = (32u) temp;
+			f.[(u<<6)+(j<<4)+9] = (32u) temp1;
+			f.[(u<<6)+(j<<4)+10] = (32u) temp2;
+			f.[(u<<6)+(j<<4)+11] = (32u) temp3;
+			f.[(u<<6)+(j<<4)+12] = (32u) temp4;
+			f.[(u<<6)+(j<<4)+13] = (32u) temp5;
+			f.[(u<<6)+(j<<4)+14] = (32u) temp6;
+			f.[(u<<6)+(j<<4)+15] = (32u) temp7;
+			() = #spill(f);
+		}
+		for u = 4 to 8
+		{
+			q0 = pstate2[u<<1];
+			q1 = pstate2[(u<<1)+1];
+			
+			temp = mask2 & (q0 >> 1);
+			temp2 = q0 & mask2;
+			q0 = temp2 + temp;
+			temp = mask1 & (q0 >> 2);
+			temp2 = q0 & mask1;
+			q0 = temp2 + temp;
+			
+			temp = mask2 & (q1 >> 1);
+			temp2 = q1 & mask2;
+			q1 = temp2 + temp;
+			temp = mask1 & (q1 >> 2);
+			temp2 = q1 & mask1;
+			q1 = temp2 + temp;
+
+			reg u32 mask;
+			mask = 0x0F;
+
+			temp = q0 & mask;
+			temp -= 2;
+			temp1 = mask & (q0 >> 4);
+			temp1 -= 2;
+			temp2 = mask & (q0 >> 8);
+			temp2 -= 2;
+			temp3 = mask & (q0 >> 12);
+			temp3 -= 2;
+			temp4 = mask & (q0 >> 16);
+			temp4 -= 2;
+			temp5 = mask & (q0 >> 20);
+			temp5 -= 2;
+			temp6 = mask & (q0 >> 24);
+			temp6 -= 2;
+			temp7 = mask & (q0 >> 28);
+			temp7 -= 2;
+			() = #unspill(g);
+			g.[(u<<6)+(j<<4)-256] = (32u) temp;
+			g.[(u<<6)+(j<<4)-255] = (32u) temp1;
+			g.[(u<<6)+(j<<4)-254] = (32u) temp2;
+			g.[(u<<6)+(j<<4)-253] = (32u) temp3;
+			g.[(u<<6)+(j<<4)-252] = (32u) temp4;
+			g.[(u<<6)+(j<<4)-251] = (32u) temp5;
+			g.[(u<<6)+(j<<4)-250] = (32u) temp6;
+			g.[(u<<6)+(j<<4)-249] = (32u) temp7;
+
+			temp = q1 & mask;
+			temp -= 2;
+			temp1 = mask & (q1 >> 4);
+			temp1 -= 2;
+			temp2 = mask & (q1 >> 8);
+			temp2 -= 2;
+			temp3 = mask & (q1 >> 12);
+			temp3 -= 2;
+			temp4 = mask & (q1 >> 16);
+			temp4 -= 2;
+			temp5 = mask & (q1 >> 20);
+			temp5 -= 2;
+			temp6 = mask & (q1 >> 24);
+			temp6 -= 2;
+			temp7 = mask & (q1 >> 28);
+			temp7 -= 2;
+			g.[(u<<6)+(j<<4)-248] = (32u) temp;
+			g.[(u<<6)+(j<<4)-247] = (32u) temp1;
+			g.[(u<<6)+(j<<4)-246] = (32u) temp2;
+			g.[(u<<6)+(j<<4)-245] = (32u) temp3;
+			g.[(u<<6)+(j<<4)-244] = (32u) temp4;
+			g.[(u<<6)+(j<<4)-243] = (32u) temp5;
+			g.[(u<<6)+(j<<4)-242] = (32u) temp6;
+			g.[(u<<6)+(j<<4)-241] = (32u) temp7;
+			() = #spill(g);
+		}
+	}
+	() = #unspill(f, g);
+	return f, g;
+}
+
+inline fn extractLowbit2_jazz(reg ptr u32[8] d, reg ptr u32[64] a) -> reg ptr u32[8]
+{
+	reg u32 u, res1, res2, res3, res4, val, temp, one;
+	one = 1;
+	u = 0;
+	while (u < 256)
+	{	
+		val = (32u)a.[u];
+		res1 = val & 1;
+		temp = one & (val >> 8);
+		res1 |= (temp) << 1;
+		temp = one & (val >> 16);
+		res1 |= (temp) << 2;
+		temp = one & (val >> 24);
+		res1 |= (temp) << 3;
+
+		temp = u+4;
+		val = (32u)a.[temp];
+		temp = val & 1;
+		res1 |= (temp) << 4;
+		temp = one & (val >> 8);
+		res1 |= (temp) << 5;
+		temp = one & (val >> 16);
+		res1 |= (temp) << 6;
+		temp = one & (val >> 24);
+		res1 |= (temp) << 7;
+
+		u+=8;
+		// =========================
+		val = (32u)a.[u];
+		res2 = val & 1;
+		temp = one & (val >> 8);
+		res2 |= (temp) << 1;
+		temp = one & (val >> 16);
+		res2 |= (temp) << 2;
+		temp = one & (val >> 24);
+		res2 |= (temp) << 3;
+
+		temp = u+4;
+		val = (32u)a.[temp];
+		temp = val & 1;
+		res2 |= (temp) << 4;
+		temp = one & (val >> 8);
+		res2 |= (temp) << 5;
+		temp = one & (val >> 16);
+		res2 |= (temp) << 6;
+		temp = one & (val >> 24);
+		res2 |= (temp) << 7;
+
+		u+=8;
+		// =========================
+		val = (32u)a.[u];
+		res3 = val & 1;
+		temp = one & (val >> 8);
+		res3 |= (temp) << 1;
+		temp = one & (val >> 16);
+		res3 |= (temp) << 2;
+		temp = one & (val >> 24);
+		res3 |= (temp) << 3;
+
+		temp = u+4;
+		val = (32u)a.[temp];
+		temp = val & 1;
+		res3 |= (temp) << 4;
+		temp = one & (val >> 8);
+		res3 |= (temp) << 5;
+		temp = one & (val >> 16);
+		res3 |= (temp) << 6;
+		temp = one & (val >> 24);
+		res3 |= (temp) << 7;
+
+		u+=8;
+		// =========================
+		val = (32u)a.[u];
+		res4 = val & 1;
+		temp = one & (val >> 8);
+		res4 |= (temp) << 1;
+		temp = one & (val >> 16);
+		res4 |= (temp) << 2;
+		temp = one & (val >> 24);
+		res4 |= (temp) << 3;
+
+		temp = u+4;
+		val = (32u)a.[temp];
+		temp = val & 1;
+		res4 |= (temp) << 4;
+		temp = one & (val >> 8);
+		res4 |= (temp) << 5;
+		temp = one & (val >> 16);
+		res4 |= (temp) << 6;
+		temp = one & (val >> 24);
+		res4 |= (temp) << 7;
+		// =========================
+		res4 <<= 24;
+		res3 <<= 16;
+		res2 <<= 8;
+		res1 |= res2;
+		res1 |= res3;
+		res1 |= res4;
+		u-=24;
+		temp = u >> 3;
+		d.[temp] = res1;
+
+		u+=32;
+	}	
+	
+	return d;
+}
+
+inline fn bpXor12864_2_jazz(reg ptr u32[4] d128, reg ptr u32[4] d64, reg ptr u32[8] a) -> reg ptr u32[4], reg ptr u32[4]
+{
+	reg u32 a0, a4, a8, a12, a16, a20, a24, a28, res0_128, res1_128, res2_128, res3_128, res0_64, res1_64, res2_64, res3_64;
+	
+	a0 = a.[0];
+	a4 = a.[4];
+	a8 = a.[8];
+	a12 = a.[12];
+	a16 = a.[16];
+	a20 = a.[20];
+	a24 = a.[24];
+	a28 = a.[28];
+	res0_128 = a0 ^ a16;
+	res0_64 = a0 ^ a8;
+	res1_128 = a8 ^ a24;
+	res1_64 = a16 ^ a24;
+	res2_128 = a4 ^ a20;
+	res2_64 = a4 ^ a12; 
+	res3_128 = a12 ^ a28;	
+	res3_64 = a20 ^ a28; 
+	d128.[0] = res0_128;
+	d128.[4] = res2_128;
+	d128.[8] = res1_128;
+	d128.[12] = res3_128;
+	d64.[0] = res0_64;
+	d64.[4] = res2_64;
+	d64.[8] = res1_64;
+	d64.[12] = res3_64;
+
+	return d128, d64;
+}
+
+inline fn bpXor128_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b) -> reg ptr u32[4]
+{
+	reg u32 a0, b0, a4, b4, a8, b8, a12, b12, res0, res1, res2, res3;
+
+	a0 = a.[0];
+	a4 = a.[4];
+	a8 = a.[8];
+	a12 = a.[12];
+	b0 = b.[0];
+	b4 = b.[4];
+	b8 = b.[8];
+	b12 = b.[12];
+	res0 = a0 ^ b0;
+	res1 = a4 ^ b4;
+	res2 = a8 ^ b8;
+	res3 = a12 ^ b12;
+	d.[0] = res0;
+	d.[4] = res1;
+	d.[8] = res2;
+	d.[12] = res3;
+	
+	return d;
+}
+
+inline fn bpXor64_2_jazz(reg ptr u32[2] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[2]
+{
+	reg u32 a0, b0, a4, b4, res0, res1;
+	
+	a0 = a.[0];
+	a4 = a.[4];
+	b0 = b.[0];
+	b4 = b.[4];
+	res0 = a0 ^ b0;
+	res1 = a4 ^ b4;
+	d.[0] = res0;
+	d.[4] = res1;
+
+	return d;
+}
+
+inline fn bpXor256_2_jazz(reg ptr u32[8] d, reg ptr u32[8] a, reg ptr u32[8] b) -> reg ptr u32[8]
+{
+	reg u32 res0, res1, res2, res3, res4, res5, res6, res7, val_a, val_b, val_a_2, val_b_2, val_a_3, val_b_3, val_a_4, val_b_4;
+
+	val_a = a.[0];
+	val_b = b.[0];
+	val_a_2 = a.[4];
+	val_b_2 = b.[4];
+	val_a_3 = a.[8];
+	val_b_3 = b.[8];
+	val_a_4 = a.[12];
+	val_b_4 = b.[12];
+	res0 = val_a ^ val_b;
+	res1 = val_a_2 ^ val_b_2;
+	res2 = val_a_3 ^ val_b_3;
+	res3 = val_a_4 ^ val_b_4;
+
+	val_a = a.[16];
+	val_b = b.[16];
+	val_a_2 = a.[20];
+	val_b_2 = b.[20];
+	val_a_3 = a.[24];
+	val_b_3 = b.[24];
+	val_a_4 = a.[28];
+	val_b_4 = b.[28];
+	res4 = val_a ^ val_b;
+	res5 = val_a_2 ^ val_b_2;
+	res6 = val_a_3 ^ val_b_3;
+	res7 = val_a_4 ^ val_b_4;
+
+	d.[0] = res0;
+	d.[4] = res1;
+	d.[8] = res2;
+	d.[12] = res3;
+	d.[16] = res4;
+	d.[20] = res5;
+	d.[24] = res6;
+	d.[28] = res7;
+	return d;
+}
+
+inline fn bpMulAdd64_2_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[4]
+{
+	reg u32 a0, a1, b0, b1, c0_lo, c0_hi, c1_lo, c1_hi, c2_lo, c2_hi, d_lo, d_hi, d_lo_2, d_hi_2, res_lo, res_hi, in1, in2;
+
+	a0 = a.[0];
+	a1 = a.[4];
+	b0 = b.[0];
+	b1 = b.[4];
+	
+	() = #spill(a1, b1, d);
+	c0_lo, c0_hi = bpMul32_jazz(a0, b0);
+	() = #spill(c0_lo, c0_hi, a0, b0);
+
+	() = #unspill(a1, b1);
+	c1_lo, c1_hi = bpMul32_jazz(a1, b1);
+	() = #spill(c1_lo, c1_hi);
+
+	() = #unspill(a0, b0);
+	in1 = a0 ^ a1;
+	in2 = b0 ^ b1;
+	c2_lo, c2_hi = bpMul32_jazz(in1, in2);
+
+	() = #unspill(c0_lo, c0_hi, c1_lo, c1_hi, d);
+	c2_lo = c2_lo ^ c0_lo;
+	c2_lo ^= c1_lo;
+	c2_hi = c2_hi ^ c0_hi;
+	c2_hi ^= c1_hi;
+
+	d_lo = d.[0];
+	d_hi = d.[4];
+	d_lo_2 = d.[8];
+	d_hi_2 = d.[12];
+	res_lo = d_lo ^ c0_lo;
+	res_hi = d_hi ^ c0_hi;
+	res_hi ^= c2_lo;
+	d.[0] = res_lo;
+	d.[4] = res_hi;
+	res_lo = d_lo_2 ^ c1_lo;
+	res_lo ^= c2_hi;
+	res_hi = d_hi_2 ^ c1_hi;
+	d.[8] = res_lo;
+	d.[12] = res_hi;
+	return d;
+}
+
+inline fn bpMulAdd64_dzero_2_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[4]
+{
+	reg u32 a0, a1, b0, b1, c0_lo, c0_hi, c1_lo, c1_hi, c2_lo, c2_hi, in1, in2;
+
+	a0 = a.[0];
+	a1 = a.[4];
+	b0 = b.[0];
+	b1 = b.[4];
+	() = #spill(a1, b1, d);
+	c0_lo, c0_hi = bpMul32_jazz(a0, b0);
+	() = #spill(c0_lo, c0_hi, a0, b0);
+
+	() = #unspill(a1, b1);
+	c1_lo, c1_hi = bpMul32_jazz(a1, b1);
+	() = #spill(c1_lo, c1_hi);
+
+	() = #unspill(a0, b0);
+	in1 = a0 ^ a1;
+	in2 = b0 ^ b1;
+	c2_lo, c2_hi = bpMul32_jazz(in1, in2);
+
+	() = #unspill(c0_lo, c0_hi, c1_lo, c1_hi, d);
+	c2_lo = c2_lo ^ c0_lo;
+	c2_lo ^= c1_lo;
+	c2_hi = c2_hi ^ c0_hi;
+	c2_hi ^= c1_hi;
+
+	c0_hi ^= c2_lo;
+	d.[0] = c0_lo;
+	d.[4] = c0_hi;
+
+	c1_lo ^= c2_hi;
+	d.[8] = c1_lo;
+	d.[12] = c1_hi;
+	return d;
+}
+
+inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32] b) -> reg ptr u8[32]
+{
+	//t1 = tmp;
+	stack u8[32] at1;
+  	reg ptr u8[32] t1;
+  	t1 = at1;
+
+	//t2 = t1 + 32;
+	stack u8[32] at2;
+  	reg ptr u8[32] t2;
+  	t2 = at2;
+
+	//t22 = t2 + 16;
+	stack u8[32] at22;
+  	reg ptr u8[32] t22;
+  	t22 = at22;
+
+	//resXor64_a = t2 + 32;
+	stack u8[16] aresXor64_a;
+  	reg ptr u8[16] resXor64_a;
+  	resXor64_a = aresXor64_a;
+	
+	//resXor64_b = resXor64_a + 32;
+	stack u8[16] aresXor64_b;
+  	reg ptr u8[16] resXor64_b;
+  	resXor64_b = aresXor64_b;
+
+	//buf5 = resXor64_b + 32;
+	stack u8[32] abuf5;
+  	reg ptr u8[32] buf5;
+  	buf5 = abuf5;
+
+	//buf6 = buf5 + 32;
+	stack u8[32] abuf6;
+  	reg ptr u8[32] buf6;
+  	buf6 = abuf6;
+
+	() = #spill(t1, t2, t22, buf5, buf6, a, b);
+
+	// bpXor12864_jazz(d, resXor64_a, a);
+	reg ptr u8[16] d_16_plus_0;
+	d_16_plus_0 = d[0:16];
+	() = #unspill(a);
+	d_16_plus_0, resXor64_a = bpXor12864_2_jazz(d_16_plus_0, resXor64_a, a);
+	d[0:16] = d_16_plus_0;
+	() = #spill(resXor64_a, d_16_plus_0);
+	
+	// bpXor12864_jazz(d + 16, resXor64_b, b);
+	reg ptr u8[16] d_16_plus_16;
+	d_16_plus_16 = d[16:16];
+	() = #unspill(b);
+	d_16_plus_16, resXor64_b = bpXor12864_2_jazz(d_16_plus_16, resXor64_b, b);
+	d[16:16] = d_16_plus_16;
+	() = #spill(d, resXor64_b, d_16_plus_16);
+
+
+	// bpXor64_jazz(t22, d, d + 8);
+	() = #unspill(d);
+	reg ptr u8[8] d_8_plus_0;
+	d_8_plus_0 = d[0:8];
+	reg ptr u8[8] d_8_plus_8;
+	d_8_plus_8 = d[8:8];
+	() = #unspill(t22);
+	reg ptr u8[8] t22_8_plus_0;
+	t22_8_plus_0 = t22[0:8];
+	t22_8_plus_0 = bpXor64_2_jazz(t22_8_plus_0, d_8_plus_0, d_8_plus_8);
+	t22[0:8] = t22_8_plus_0;
+	() = #spill(t22_8_plus_0, d_8_plus_0, d_8_plus_8);
+
+	// bpXor64_jazz(t22 + 8, d + 16, d + 24);
+	() = #unspill(d);
+	reg ptr u8[8] d_8_plus_16;
+	d_8_plus_16 = d[16:8];
+	reg ptr u8[8] d_8_plus_24;
+	d_8_plus_24 = d[24:8];
+	reg ptr u8[8] t22_8_plus_8;
+	t22_8_plus_8 = t22[8:8];
+	t22_8_plus_8 = bpXor64_2_jazz(t22_8_plus_8, d_8_plus_16, d_8_plus_24);
+	t22[8:8] = t22_8_plus_8;
+	() = #spill(t22, t22_8_plus_8, d_8_plus_16, d_8_plus_24);
+	
+	// bpMulAdd64_jazz(t2, t22, t22 + 8);
+	() = #unspill(t2, t1, t22_8_plus_0, t22_8_plus_8);
+	reg ptr u8[16] t2_16_plus_0;
+	t2_16_plus_0 = t2[0:16];
+	reg ptr u8[16] t1_16_plus_0;
+	t1_16_plus_0 = t1[0:16];
+	reg ptr u8[16] t1_16_plus_16;
+	t1_16_plus_16 = t1[16:16];
+	() = #spill(t1_16_plus_0, t1_16_plus_16);
+	//() = #unspill(t2_16_plus_0);
+	t2_16_plus_0 = bpMulAdd64_dzero_2_jazz(t2_16_plus_0, t22_8_plus_0, t22_8_plus_8);
+	() = #unspill(t2);
+	t2[0:16] = t2_16_plus_0;
+	() = #spill(t2, t2_16_plus_0);
+
+	// bpMulAdd64_jazz(t1, d, d + 16);
+	() = #unspill(t1_16_plus_0, d_8_plus_0, d_8_plus_16);
+	t1_16_plus_0 = bpMulAdd64_dzero_2_jazz(t1_16_plus_0, d_8_plus_0, d_8_plus_16);
+	() = #unspill(t1);
+	t1[0:16] = t1_16_plus_0;
+	() = #spill(t1, t1_16_plus_0);
+
+	// bpMulAdd64_jazz(t1 + 16, d + 8, d + 24);
+	() = #unspill(t1_16_plus_16, d_8_plus_8, d_8_plus_24);
+	t1_16_plus_16 = bpMulAdd64_dzero_2_jazz(t1_16_plus_16, d_8_plus_8, d_8_plus_24);
+	() = #unspill(t1);
+	t1[16:16] = t1_16_plus_16;
+	() = #spill(t1, t1_16_plus_16);
+	
+	// bpMulAdd64_dzero_jazz(buf5, resXor64_a, resXor64_b);
+	() = #unspill(buf5, resXor64_a, resXor64_b);
+	reg ptr u8[16] buf5_16_plus_0;
+	buf5_16_plus_0 = buf5[0:16];
+	reg ptr u8[8] resXor64_a_8_plus_0;
+	resXor64_a_8_plus_0 = resXor64_a[0:8];
+	reg ptr u8[8] resXor64_b_8_plus_0;
+	resXor64_b_8_plus_0 = resXor64_b[0:8];
+	buf5_16_plus_0 = bpMulAdd64_dzero_2_jazz(buf5_16_plus_0, resXor64_a_8_plus_0, resXor64_b_8_plus_0);
+	() = #unspill(buf5);
+	buf5[0:16] = buf5_16_plus_0;
+	() = #spill(buf5, buf5_16_plus_0);
+	
+	// bpMulAdd64_dzero_jazz(d, a, b);
+	() = #unspill(d_16_plus_0, a, b);
+	reg ptr u8[8] a_8_plus_0;
+	a_8_plus_0 = a[0:8];
+	reg ptr u8[8] b_8_plus_0;
+	b_8_plus_0 = b[0:8];
+	d_16_plus_0 = bpMulAdd64_dzero_2_jazz(d_16_plus_0, a_8_plus_0, b_8_plus_0);
+	() = #unspill(d);
+	d[0:16] = d_16_plus_0;
+	() = #spill(d, d_16_plus_0);
+	
+	// bpMulAdd64_dzero_jazz(d + 16, a + 8, b + 8);
+	() = #unspill(d_16_plus_16, a, b);
+	reg ptr u8[8] a_8_plus_8;
+	a_8_plus_8 = a[8:8];
+	reg ptr u8[8] b_8_plus_8;
+	b_8_plus_8 = b[8:8];
+	d_16_plus_16 = bpMulAdd64_dzero_2_jazz(d_16_plus_16, a_8_plus_8, b_8_plus_8);
+	() = #unspill(d);
+	d[16:16] = d_16_plus_16;
+	() = #spill(d, d_16_plus_16);
+
+	// bpXor128_jazz(buf5, buf5, d);
+	() = #unspill(buf5_16_plus_0, d_16_plus_0);
+	buf5_16_plus_0 = bpXor128_2_jazz(buf5_16_plus_0, buf5_16_plus_0, d_16_plus_0);
+	() = #spill(buf5_16_plus_0);
+
+	// bpXor128_jazz(buf5, buf5, d + 16);
+	() = #unspill(d_16_plus_16, buf5_16_plus_0);
+	buf5_16_plus_0 = bpXor128_2_jazz(buf5_16_plus_0, buf5_16_plus_0, d_16_plus_16);
+	() = #spill(buf5_16_plus_0);
+
+	// bpXor128_jazz(d + 8, d + 8, buf5);
+	() = #unspill(d, buf5_16_plus_0);
+	reg ptr u8[16] d_16_plus_8;
+	d_16_plus_8 = d[8:16];
+	d_16_plus_8 = bpXor128_2_jazz(d_16_plus_8, d_16_plus_8, buf5_16_plus_0);
+	() = #unspill(d);
+	d[8:16] = d_16_plus_8;
+	() = #spill(d, d_16_plus_8);
+
+	// bpXor128_jazz(buf6, d, d + 16);
+	() = #unspill(buf6, d);
+	reg ptr u8[16] buf6_16_plus_0;
+	buf6_16_plus_0 = buf6[0:16];
+	d_16_plus_0 = d[0:16];
+	d_16_plus_16 = d[16:16];
+	buf6_16_plus_0 = bpXor128_2_jazz(buf6_16_plus_0, d_16_plus_0, d_16_plus_16);
+	() = #spill(buf6_16_plus_0, d_16_plus_0, d_16_plus_16);
+
+	// bpMulAdd64_jazz(buf6, resXor64_a + 8, resXor64_b + 8);
+	() = #unspill(buf6_16_plus_0, resXor64_a, resXor64_b);
+	reg ptr u8[8] resXor64_a_8_plus_8;
+	resXor64_a_8_plus_8 = resXor64_a[8:8];
+	reg ptr u8[8] resXor64_b_8_plus_8;
+	resXor64_b_8_plus_8 = resXor64_b[8:8];
+	buf6_16_plus_0 = bpMulAdd64_2_jazz(buf6_16_plus_0, resXor64_a_8_plus_8, resXor64_b_8_plus_8);
+	() = #unspill(buf6);
+	buf6[0:16] = buf6_16_plus_0;
+	() = #spill(buf6, buf6_16_plus_0);
+
+	// bpMulAdd64_jazz(d, a + 16, b + 16);
+	() = #unspill(d_16_plus_0, a, b);
+	reg ptr u8[8] a_8_plus_16;
+	a_8_plus_16 = a[16:8];
+	reg ptr u8[8] b_8_plus_16;
+	b_8_plus_16 = b[16:8];
+	d_16_plus_0 = bpMulAdd64_2_jazz(d_16_plus_0, a_8_plus_16, b_8_plus_16);
+	() = #unspill(d);
+	d[0:16] = d_16_plus_0;
+	() = #spill(d, d_16_plus_0);
+
+	// bpMulAdd64_jazz(d + 16, a + 24, b + 24);
+	() = #unspill(d_16_plus_16, a, b);
+	reg ptr u8[8] a_8_plus_24;
+	a_8_plus_24 = a[24:8];
+	reg ptr u8[8] b_8_plus_24;
+	b_8_plus_24 = b[24:8];
+	d_16_plus_16 = bpMulAdd64_2_jazz(d_16_plus_16, a_8_plus_24, b_8_plus_24);
+	() = #unspill(d);
+	d[16:16] = d_16_plus_16;
+	() = #spill(d, d_16_plus_16);
+
+	// bpXor128_jazz(t2, t2, t1);
+	() = #unspill(t2_16_plus_0, t1_16_plus_0);
+	t2_16_plus_0 = bpXor128_2_jazz(t2_16_plus_0, t2_16_plus_0, t1_16_plus_0);
+	
+	// bpXor128_jazz(t2, t2, t1 + 16);
+	() = #unspill(t1_16_plus_16);
+	t2_16_plus_0 = bpXor128_2_jazz(t2_16_plus_0, t2_16_plus_0, t1_16_plus_16);
+
+	// bpXor128_jazz(t1 + 8, t1 + 8, t2);
+	() = #unspill(t1, t1_16_plus_16);
+	reg ptr u8[16] t1_16_plus_8;
+	t1_16_plus_8 = t1[8:16];
+	t1_16_plus_8 = bpXor128_2_jazz(t1_16_plus_8, t1_16_plus_8, t2_16_plus_0);
+	() = #unspill(t1);
+	t1[8:16] = t1_16_plus_8;
+	() = #spill(t1);
+
+	// bpXor128_jazz(buf6, buf6, d);
+	() = #unspill(buf6_16_plus_0, d_16_plus_0);
+	buf6_16_plus_0 = bpXor128_2_jazz(buf6_16_plus_0, buf6_16_plus_0, d_16_plus_0);
+
+	// bpXor128_jazz(buf6, buf6, d + 16);
+	() = #unspill(d_16_plus_16);
+	buf6_16_plus_0 = bpXor128_2_jazz(buf6_16_plus_0, buf6_16_plus_0, d_16_plus_16);
+
+	// bpXor128_jazz(d + 8, d + 8, buf6);
+	() = #unspill(d);
+	d_16_plus_8 = d[8:16];
+	d_16_plus_8 = bpXor128_2_jazz(d_16_plus_8, d_16_plus_8, buf6_16_plus_0);
+	() = #unspill(d);
+	d[8:16] = d_16_plus_8;
+	() = #spill(d);
+
+	// bpXor256_jazz(t1, t1, d);
+	() = #unspill(t1, d);
+	t1 = bpXor256_2_jazz(t1, t1, d);
+
+	// bpXor128_jazz(d, d, t1 + 16);
+	() = #unspill(d);
+	t1_16_plus_16 = t1[16:16];
+	d_16_plus_0 = d[0:16];
+	d_16_plus_0 = bpXor128_2_jazz(d_16_plus_0, d_16_plus_0, t1_16_plus_16);
+	d[0:16] = d_16_plus_0;
+
+	// bpXor128_jazz(d + 16, d + 16, t1);
+	t1_16_plus_0 = t1[0:16];
+	d_16_plus_16 = d[16:16];
+	d_16_plus_16 = bpXor128_2_jazz(d_16_plus_16, d_16_plus_16, t1_16_plus_0);
+	d[16:16] = d_16_plus_16;
+
+	return d;
+}
+
+inline fn sig_gauss_2_jazz(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112] priv, reg ptr u32[16] t, reg u32 attempt) -> reg ptr u8[512], reg u32
+{
+	() = #spill(x, hm, priv, t, attempt);
+
+	reg u32 pos, seedlen;
+
+	stack u32[25*2] state;
+  	reg ptr u32[25*2] pstate;
+  	pstate = state;
+
+	stack u32[25*2] state2;
+	reg ptr u32[25*2] pstate2;
+	pstate2 = state2;
+	() = #spill(pstate2);
+
+	stack u32[10] buf;
+	reg ptr u32[10] pbuf;
+	pbuf = buf;
+	() = #spill(pbuf);
+
+	() = #unspill(hm);
+	pstate = __add_crh_ref(pstate, hm); // |hm| = 64
+  	pstate = __add_zero_after_add(pstate, 64);
+	
+	pos = 64;
+	() = #unspill(priv);
+	seedlen = 16;
+	pstate, pos = _shake256_inc_absorb_mem_adapted4(pstate, pos, priv, seedlen);
+	
+	stack u8[4] tbuf;
+  	reg ptr u8[4] ptbuf;
+  	ptbuf = tbuf;
+	
+	() = #unspill(attempt);
+	reg u32 temp;
+	temp = attempt + 1;
+	ptbuf[0] = temp;
+	temp >>= 8;
+	ptbuf[1] = temp;
+	temp >>= 8;
+	ptbuf[2] = temp;
+	temp >>= 8;
+	ptbuf[3] = temp;
+	
+	pstate, pos = _shake256_inc_absorb_mem_adapted(pstate, pos, ptbuf, 4);
+	() = #spill(pstate, pos);
+	
+	// ============================================================================
+	// hi_len = 8
+	// lo_len = 20
+	stack u8[41] seed;
+	reg ptr u8[41] pseed;
+	pseed = seed;
+	
+	//pseed = #randombytes(pseed);
+	// ============= SHOULD BE FILLED WITH RANDOM BYTES =============
+	temp = 2;
+	pseed[0] = temp;
+	pseed[1] = temp;
+	pseed[2] = temp;
+	pseed[3] = temp;
+	pseed[4] = temp;
+	pseed[5] = temp;
+	pseed[6] = temp;
+	pseed[7] = temp;
+	pseed[8] = temp;
+	pseed[9] = temp;
+	pseed[10] = temp;
+	pseed[11] = temp;
+	pseed[12] = temp;
+	pseed[13] = temp;
+	pseed[14] = temp;
+	pseed[15] = temp;
+	pseed[16] = temp;
+	pseed[17] = temp;
+	pseed[18] = temp;
+	pseed[19] = temp;
+	pseed[20] = temp;
+	pseed[21] = temp;
+	pseed[22] = temp;
+	pseed[23] = temp;
+	pseed[24] = temp;
+	pseed[25] = temp;
+	pseed[26] = temp;
+	pseed[27] = temp;
+	pseed[28] = temp;
+	pseed[29] = temp;
+	pseed[30] = temp;
+	pseed[31] = temp;
+	pseed[32] = temp;
+	pseed[33] = temp;
+	pseed[34] = temp;
+	pseed[35] = temp;
+	pseed[36] = temp;
+	pseed[37] = temp;
+	pseed[38] = temp;
+	pseed[39] = temp;
+	pseed[40] = temp;
+	() = #spill(pseed);
+	// ================================================================
+	
+	reg u32 sn, j, u, r, pos_cpy, neg, pbit, p_odd;
+	sn = 0;
+	reg u32 pos_2;
+	() = #spill(sn);
+	() = #unspill(pstate2);
+
+	j = 0;
+	while (j < 4)
+	{	
+		// =====================================
+		() = #unspill(pseed);
+		pseed[40] = (8u) j;
+		() = #spill(j);
+		
+		() = #unspill(pstate);
+		pstate2 = #copy(pstate);
+
+		() = #unspill(pos);
+		pos_cpy = pos;                      
+		pstate2, pos_cpy = _shake256_inc_absorb_mem_adapted2(pstate2, pos_cpy, pseed, 41);
+		() = #spill(pseed);
+		pstate2 = _shake256_inc_finalize(pstate2, pos_cpy);
+		pstate2 = _stateTopqm4(pstate2);
+		pos_2 = 0;
+		() = #spill(pos_2);
+
+		// ####################################################################
+		u = 0;
+		while (u < 512)
+		{
+			() = #spill(u);
+			// =====================================
+			() = #unspill(pbuf, pos_2);
+			pstate2, pbuf, pos_2 = keccak_inc_squeeze_10(pbuf, pstate2, pos_2);
+			() = #spill(pbuf, pos_2);
+		
+			reg u32 v, lo_low, lo_high, hi;	
+			inline int k;
+			for k = 0 to 4
+			{
+				() = #unspill(j, u);
+				v = u + (j << 2);
+				v += k;
+
+				() = #unspill(pbuf);
+				lo_low = (32u)pbuf.[k<<3];
+				lo_high = (32u)pbuf.[(k<<3)+4];
+				hi = (32u)pbuf.[u16 32+(k<<1)];
+				
+				neg = lo_high >> 31;
+				neg = 0 - neg;
+				() = #spill(neg);
+
+				temp = 1;
+				lo_high = #BIC(lo_high, temp<<31); // lo_high & 0x7FFFFFFF 
+				hi = #BIC(hi, temp<<15); //hi &= 0x7FFF;
+				
+				temp = v >> 3;
+				() = #unspill(t);
+				pbit = (32u)t.[temp];
+				temp = v & 7;
+				pbit >>= temp;
+				pbit &= 1; // OK
+				p_odd = 0 - pbit; // OK
+				r = test(hi, p_odd, lo_low, lo_high);
+				
+				() = #unspill(neg);
+				r <<= 1;
+				r -= p_odd;
+				r = r ^ neg;
+				r -= neg;
+				() = #unspill(x);
+				x.[v] = (8s) r;
+				() = #spill(x);
+					
+				() = #unspill(sn);
+				temp = r*r;
+				sn += temp;
+				() = #spill(sn);
+			}
+			// =====================================
+			() = #unspill(u);
+			u += 16;
+		}
+		// =====================================
+		() = #unspill(j);
+		j += 1;
+	}
+	() = #unspill(x, sn);
+	return x, sn;
+}
+
+/*
+export fn sig_gauss_2_exp(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112] priv, reg ptr u32[16] t) -> reg ptr u8[512]
+{
+	reg u32 attempt, xsn;
+	x = x;
+	hm = hm;
+	priv = priv;
+	t = t;
+	attempt = 0;
+
+	x, xsn = sig_gauss_2_jazz(x, hm, priv, t, attempt);
+	x = x; xsn = xsn;
+	return x;
+}
+*/
+inline fn polysetsmallinplacelow_2_jazz(reg ptr u32[512] d, reg ptr u32[64] a) -> reg ptr u32[512]
+{
+	reg u32 x, temp, x0, x1, q;
+	q = 18433;
+	inline int u, index;
+	for u = 127 downto -1
+	{
+		x = (32s)a.[u16 2*u];
+		x0 = #SBFX(x, 0, 8);
+		temp = x >> 8;
+		x1 = #SBFX(temp, 0, 8);
+		x = setsmall_jazz(x0, q);
+		temp = setsmall_jazz(x1, q);
+		index = u << 3;
+		d.[index] = x; //(u32)[a+u*8] = x;
+		index += 4;
+		d.[index] = temp; //(u32)[a_copy+u*8] = temp;
+	}
+	return d;
+}
+
+inline fn polysetsmallinplacehigh_2_jazz(reg ptr u32[256] d, reg ptr u32[64] a) -> reg ptr u32[256]
+{
+	reg u32 temp, x, x0, x1, q;
+	inline int u, index;
+	q = 18433;
+	for u = 0 to 128
+	{
+		x = (32s)a.[u16 u*2];
+		x0 = #SBFX(x, 0, 8);
+		temp = x >> 8;
+		x1 = #SBFX(temp, 0, 8);
+		x = setsmall_jazz(x0, q);
+		x0 = setsmall_jazz(x1, q);
+		index = u << 3;
+		d.[index] = x; 
+		index += 4;
+		d.[index] = x0;
+	}
+	return d;
+}
+
+inline fn polysetsmall_2_jazz(reg ptr u32[256] d, reg ptr u8[256] a) -> reg ptr u32[256]
+{
+    reg u32 temp1, temp2, temp3, temp4, temp5, temp6, temp7, temp8, q;
+	q = 18433;
+	inline int i, index, index2;
+	index = 0;
+	index2 = 0;
+
+	for i = 0 to 32
+	{
+		temp1 = (32s)a.[index];
+		index += 1;
+		temp2 = (32s)a.[index];
+		index += 1;
+		temp3 = (32s)a.[index];
+		index += 1;
+		temp4 = (32s)a.[index];
+		index += 1;
+		temp5 = (32s)a.[index];
+		index += 1;
+		temp6 = (32s)a.[index];
+		index += 1;
+		temp7 = (32s)a.[index];
+		index += 1;
+		temp8 = (32s)a.[index];
+		temp1 = setsmall_jazz(temp1, q);
+		temp2 = setsmall_jazz(temp2, q);
+		temp3 = setsmall_jazz(temp3, q);
+		temp4 = setsmall_jazz(temp4, q);
+		temp5 = setsmall_jazz(temp5, q);
+		temp6 = setsmall_jazz(temp6, q);
+		temp7 = setsmall_jazz(temp7, q);
+		temp8 = setsmall_jazz(temp8, q);
+		d.[index2*4] = temp1;
+		index2 += 1;
+		d.[index2*4] = temp2;
+		index2 += 1;
+		d.[index2*4] = temp3;
+		index2 += 1;
+		d.[index2*4] = temp4;
+		index2 += 1;
+		d.[index2*4] = temp5;
+		index2 += 1;
+		d.[index2*4] = temp6;
+		index2 += 1;
+		d.[index2*4] = temp7;
+		index2 += 1;
+		d.[index2*4] = temp8;
+
+		index += 1;
+		index2 += 1;
+	}
+	return d;
+}
+
+inline fn bigmul_2_jazz(reg ptr u32[256] a, reg ptr u32[256] b) -> reg ptr u32[256]
+{
+	reg u32 val1, val2, val1_, val2_, val1__, val2__, val1___, val2___, constant, temp, temp_, temp__, temp___, q, q_inv;
+	q = 18433;
+	q_inv = 3955247103;
+	constant = 806;
+	inline int u, index, index2;
+	index = 0;
+	index2 = 0;
+	for u = 0 to 64
+	{
+		val1 = (32s)a[index];
+		val2 = (32s)b[index];
+		index += 1;
+		val1_ = (32s)a[index];
+		val2_ = (32s)b[index];
+		index += 1;
+		val1__ = (32s)a[index];
+		val2__ = (32s)b[index];
+		index += 1;
+		val1___ = (32s)a[index];
+		val2___ = (32s)b[index];
+		val1 = val1 - val2;
+		val1_ = val1_ - val2_;
+		val1__ = val1__ - val2__;
+		val1___ = val1___ - val2___;
+		temp = montymul2_jazz(constant, val1, q, q_inv);
+		temp_ = montymul2_jazz(constant, val1_, q, q_inv);
+		temp__ = montymul2_jazz(constant, val1__, q, q_inv);
+		temp___ = montymul2_jazz(constant, val1___, q, q_inv);
+		a[index2] = temp;
+		index2 += 1;
+		a[index2] = temp_;
+		index2 += 1;
+		a[index2] = temp__;
+		index2 += 1;
+		a[index2] = temp___;
+
+		index += 1;
+		index2 += 1;
+	}
+	return a;
+}
+
+inline fn polySnormSymbreak_2_jazz(reg ptr u16[256] a, reg ptr u32[256] b) -> reg ptr u16[256], reg u32
+{
+	reg u32 x, minus_x, nz, res, r, c, q;
+	inline int u;
+	q = 18433;
+	r = 0;
+	c = 0xFFFFFFFF;
+	for u = 0 to 256
+	{
+		x = (32s)b.[4*u];
+		x = snorm_jazz(x, q);
+		a.[u*2] = x;
+        minus_x = #RSB(x,0);
+		nz = minus_x | x;
+		res = #ASR(nz, 31); // tbmask
+		nz = res & c;
+		res = #MVN(nz);
+		c &= res;
+		res = #ASR(x, 31); // tbmask
+		res |= 1;
+		nz &= res;
+		r |= nz;
+	}
+	return a, r;
+}
+
+inline fn unnamed_2_jazz(reg ptr u16[256] s1, reg ptr u8[128] h1buf, reg u32 ps) -> reg ptr u16[256], reg u32
+{
+	reg u32 nm, z, temp1, y, lim, minus_512;
+	nm = #ASR(ps, 31);
+	nm = #MVN(nm);
+	lim = 512;
+	minus_512 = 4294966784;
+	inline int u;
+	for u = 0 to 256
+	{
+		z = (32s)s1.[2*u];
+		z = z ^ nm;
+		z = z - nm;
+		temp1 = (32u)h1buf.[u >> 3];
+		temp1 = temp1 >> (u & 7);
+		temp1 &= 1;
+		z = z + temp1;
+		y = z >>s 1;
+		lim = 0 if y <s minus_512;
+		lim = 0 if y >=s 512;
+		s1.[2*u] = y;
+	}
+	return s1, lim;
+}
+
+inline fn encodeSig_2_jazz(reg u32 buf, reg ptr u32[10] psalt, reg ptr u16[256] s1) -> reg u32
+{
+	reg u32 ret, buf_len, x, temp, temp1, temp2, temp3, temp4, x_low, x_high, w, buf_h, one;
+
+	temp1 = (32u)psalt.[0];
+	temp2 = (32u)psalt.[4];
+	temp3 = (32u)psalt.[8];
+	temp4 = (32u)psalt.[12];
+
+	(u8)[buf] = temp1;
+	temp1 >>= 8;
+	(u8)[buf+1] = temp1;
+	temp1 >>= 8;
+	(u8)[buf+2] = temp1;
+	temp1 >>= 8;
+	(u8)[buf+3] = temp1;
+	
+	(u8)[buf+4] = temp2;
+	temp2 >>= 8;
+	(u8)[buf+5] = temp2;
+	temp2 >>= 8;
+	(u8)[buf+6] = temp2;
+	temp2 >>= 8;
+	(u8)[buf+7] = temp2;
+
+	(u8)[buf+8] = temp3;
+	temp3 >>= 8;
+	(u8)[buf+9] = temp3;
+	temp3 >>= 8;
+	(u8)[buf+10] = temp3;
+	temp3 >>= 8;
+	(u8)[buf+11] = temp3;
+
+	(u8)[buf+12] = temp4;
+	temp4 >>= 8;
+	(u8)[buf+13] = temp4;
+
+	buf += 14;
+	buf_h = buf + 32;
+	
+	one = 1;
+
+	reg u32 acc, acc_len, buf_s;
+	buf_s = buf_h + 160;
+	acc = 0;
+	acc_len = 0;
+	buf_len = 43;
+	ret = 1;
+
+	inline int count, u;
+	u = 0;
+	for count = 0 to 32
+	{
+		#declassify w = (32s)s1.[2*u];
+		temp = w & (one << 15);
+		x = temp >> 15;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		x_low = w & 31;
+		x_high = x_low >> 32;
+		
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		
+		#declassify w = (32s)s1.[2*(u + 1)];
+		temp = w & (one << 15);
+		x |= temp >> 14;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w >> 27;
+		x_low |= w << 5;
+		
+		#declassify w = (32s)s1.[2*(u + 2)];
+		temp = w & (one << 15);
+		x |= temp >> 13;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w >> 22;
+		x_low |= w << 10;
+		
+		#declassify w = (32s)s1.[2*(u + 3)];
+		temp = w & (one << 15);
+		x |= temp >> 12;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w >> 17;
+		x_low |= w << 15;
+		
+		#declassify w = (32s)s1.[2*(u + 4)];
+		temp = w & (one << 15);
+		x |= temp >> 11;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w >> 12;
+		x_low |= w << 20;
+		
+		#declassify w = (32s)s1.[2*(u + 5)];
+		temp = w & (one << 15);
+		x |= temp >> 10;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w >> 7;
+		x_low |= w << 25;
+		
+		#declassify w = (32s)s1.[2*(u + 6)];
+		temp = w & (one << 15);
+		x |= temp >> 9;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w >> 2;
+		x_low |= w << 30;
+		
+		#declassify w = (32s)s1.[2*(u + 7)];
+		temp = w & (one << 15);
+		x |= temp >> 8;
+		temp = #ASR(w, 31);
+		w ^= temp;
+		temp = acc_len + (w >> 5);
+		temp = one << temp;
+		acc |= temp;
+		temp = one + (w >> 5);
+		acc_len += temp;
+		while (acc_len >= 8)
+		{
+			if (buf_len == 0)
+			{
+				ret = 0;
+			}
+			(u8)[buf_s] = acc;
+			buf_s+=1;
+			buf_len -= 1;
+			acc >>= 8;
+			acc_len -= 8;
+		}
+		w = w & 31;
+		x_high |= w << 3;
+		
+		(u8)[buf] = x;
+		(u8)[buf_h] = x_low;
+		temp = x_low >> 8;
+		(u8)[buf_h+1] = temp;
+		temp = x_low >> 16;
+		(u8)[buf_h+2] = temp;
+		temp = x_low >> 24;
+		(u8)[buf_h+3] = temp;
+		(u8)[buf_h+4] = x_high;
+
+		buf_h+=5;
+		buf+=1;
+		u+=8;
+	}
+	
+	
+	if (acc_len > 0)
+	{
+		if (buf_len == 0)
+		{
+			ret = 0;
+		}
+		(u8)[buf_s] = acc;
+		buf_s+=1;
+		buf_len -=1;
+	}
+	
+	memset2(buf_s, buf_len);
+	
+	return ret;
+}
+
+inline fn montymul_jazz(reg u32 x y q q_inv) -> reg u32
+{
+    reg u32 tmp0, tmp1;
+
+	x, tmp0 = #SMULL(x, y);
+	tmp1 = #MUL(tmp0, q_inv);
+	_, x = #SMLAL(tmp0, x, tmp1, q);
+
+    return x;
+}
+
+inline fn butterfly_two_layers_jazz(reg u32 s0 s1 s2 x1 x2 x3 x4 q q_inv) -> reg u32, reg u32, reg u32, reg u32
+{
+	reg u32 u;
+	// ============================ Layer low ==========================
+	u = montymul_jazz(x3, s0, q, q_inv);
+	x3 = x1 + u;
+	x1 = x1 - u;
+	u = montymul_jazz(x4, s0, q, q_inv);
+	x4 = x2 + u;
+	x2 = x2 - u;
+	// =================================================================
+	// ============================ Layer high =========================
+	u = montymul_jazz(x4, s1, q, q_inv);
+	x4 = x3 + u;
+	x3 = x3 - u;
+	u = montymul_jazz(x2, s2, q, q_inv);
+	x2 = x1 + u;
+	x1 = x1 - u;
+	// =================================================================
+	return x1, x2, x3, x4;
+}
+
+inline fn inv_butterfly_two_layers_jazz(reg u32 s0 s1 s2 x1 x2 x3 x4 q q_inv) -> reg u32, reg u32, reg u32, reg u32
+{
+	reg u32 x1_, x2_, x3_, x4_;
+	// ============================ Layer high =========================
+	x1_ = x1 + x2;
+	x2_ = x1 - x2;
+	x2_ = montymul_jazz(x2_, s1, q, q_inv);
+	x3_ = x3 + x4;
+	x4_ = x3 - x4;
+	x4_ = montymul_jazz(x4_, s2, q, q_inv);
+	// ================================================================= 
+	// ============================ Layer low ==========================
+	x1 = x1_ + x3_;
+	x3 = x1_ - x3_;
+	x3 = montymul_jazz(x3, s0, q, q_inv);
+	x2 = x2_ + x4_;
+	x4 = x2_ - x4_;
+	x4 = montymul_jazz(x4, s0, q, q_inv);
+	// =================================================================
+	return x4, x3, x2, x1;
+}
+
+inline fn NTT_unrolled_for_loop_jazz(reg ptr u32[256] a) -> reg ptr u32[256]
+{
+	reg u32 x1, x2, x3, x4, q, q_inv, s0, s1, s2;
+
+	q = 18433;
+	q_inv = 3955247103;
+
+	reg ptr u16[256] mq18433_GM_p;
+	mq18433_GM_p = mq18433_GM;
+
+	inline int i;
+	inline int index1;
+	inline int index2;
+	inline int index3;
+	inline int index4;
+
+	// ================================ Merger Layer 1 and 2 ================================
+	s0 = (32u)mq18433_GM_p.[2];
+	s1 = (32u)mq18433_GM_p.[4];
+	s2 = (32u)mq18433_GM_p.[6];
+	// 0-255
+	index1 = 0;
+	index2 = 256;
+	index3 = 512;
+	index4 = 768;
+	for i = 0 to 64
+	{
+		x1 = (32u)a.[u16 index1];
+		x2 = (32u)a.[u16 index2];
+		x3 = (32u)a.[u16 index3];
+		x4 = (32u)a.[u16 index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================ Merger Layer 3 and 4 ================================
+	s0 = (32u)mq18433_GM_p.[8];
+	s1 = (32u)mq18433_GM_p.[16];
+	s2 = (32u)mq18433_GM_p.[18];
+	// 0-63
+	index1 = 0;
+	index2 = 64;
+	index3 = 128;
+	index4 = 192;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[10];
+	s1 = (32u)mq18433_GM_p.[20];
+	s2 = (32u)mq18433_GM_p.[22];
+	// 64-127
+	index1 = 256;
+	index2 = 320;
+	index3 = 384;
+	index4 = 448;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[12];
+	s1 = (32u)mq18433_GM_p.[24];
+	s2 = (32u)mq18433_GM_p.[26];
+	// 128-191
+	index1 = 512;
+	index2 = 576;
+	index3 = 640;
+	index4 = 704;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[14];
+	s1 = (32u)mq18433_GM_p.[28];
+	s2 = (32u)mq18433_GM_p.[30];
+	// 192-255
+	index1 = 768;
+	index2 = 832;
+	index3 = 896;
+	index4 = 960;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}	
+	// ================================ Merger Layer 5 and 6 ================================
+	//m = a+16;
+	s0 = (32u)mq18433_GM_p.[32];
+	s1 = (32u)mq18433_GM_p.[64];
+	s2 = (32u)mq18433_GM_p.[66];
+
+	index1 = 0;
+	index2 = 16;
+	index3 = 32;
+	index4 = 48;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[34];
+	s1 = (32u)mq18433_GM_p.[68];
+	s2 = (32u)mq18433_GM_p.[70];
+
+	index1 = 64;
+	index2 = 80;
+	index3 = 96;
+	index4 = 112;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[36];
+	s1 = (32u)mq18433_GM_p.[72];
+	s2 = (32u)mq18433_GM_p.[74];
+
+	index1 = 128;
+	index2 = 144;
+	index3 = 160;
+	index4 = 176;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[38];
+	s1 = (32u)mq18433_GM_p.[76];
+	s2 = (32u)mq18433_GM_p.[78];
+
+	index1 = 192;
+	index2 = 208;
+	index3 = 224;
+	index4 = 240;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[40];
+	s1 = (32u)mq18433_GM_p.[80];
+	s2 = (32u)mq18433_GM_p.[82];
+	// 64-79
+	index1 = 256;
+	index2 = 272;
+	index3 = 288;
+	index4 = 304;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[42];
+	s1 = (32u)mq18433_GM_p.[84];
+	s2 = (32u)mq18433_GM_p.[86];
+
+	index1 = 320;
+	index2 = 336;
+	index3 = 352;
+	index4 = 368;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[44];
+	s1 = (32u)mq18433_GM_p.[88];
+	s2 = (32u)mq18433_GM_p.[90];
+
+	index1 = 384;
+	index2 = 400;
+	index3 = 416;
+	index4 = 432;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[46];
+	s1 = (32u)mq18433_GM_p.[92];
+	s2 = (32u)mq18433_GM_p.[94];
+
+	index1 = 448;
+	index2 = 464;
+	index3 = 480;
+	index4 = 496;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[48];
+	s1 = (32u)mq18433_GM_p.[96];
+	s2 = (32u)mq18433_GM_p.[98];
+
+	index1 = 512;
+	index2 = 528;
+	index3 = 544;
+	index4 = 560;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[50];
+	s1 = (32u)mq18433_GM_p.[100];
+	s2 = (32u)mq18433_GM_p.[102];
+
+	index1 = 576;
+	index2 = 592;
+	index3 = 608;
+	index4 = 624;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[52];
+	s1 = (32u)mq18433_GM_p.[104];
+	s2 = (32u)mq18433_GM_p.[106];
+
+	index1 = 640;
+	index2 = 656;
+	index3 = 672;
+	index4 = 688;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[54];
+	s1 = (32u)mq18433_GM_p.[108];
+	s2 = (32u)mq18433_GM_p.[110];
+
+	index1 = 704;
+	index2 = 720;
+	index3 = 736;
+	index4 = 752;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[56];
+	s1 = (32u)mq18433_GM_p.[112];
+	s2 = (32u)mq18433_GM_p.[114];
+
+	index1 = 768;
+	index2 = 784;
+	index3 = 800;
+	index4 = 816;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[58];
+	s1 = (32u)mq18433_GM_p.[116];
+	s2 = (32u)mq18433_GM_p.[118];
+
+	index1 = 832;
+	index2 = 848;
+	index3 = 864;
+	index4 = 880;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[60];
+	s1 = (32u)mq18433_GM_p.[120];
+	s2 = (32u)mq18433_GM_p.[122];
+
+	index1 = 896;
+	index2 = 912;
+	index3 = 928;
+	index4 = 944;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32u)mq18433_GM_p.[62];
+	s1 = (32u)mq18433_GM_p.[124];
+	s2 = (32u)mq18433_GM_p.[126];
+
+	index1 = 960;
+	index2 = 976;
+	index3 = 992;
+	index4 = 1008;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	return a;
+}
+
+inline fn iNTT_unrolled_jazz(reg ptr u32[256] a) -> reg ptr u32[256]
+{
+    reg u32 q, q_inv, s0, s1, s2, x1, x2, x3, x4;
+	q = 18433;
+    q_inv = 3955247103;
+
+	reg ptr u16[256] mq18433_iGM_p;
+	mq18433_iGM_p = mq18433_iGM;
+
+	inline int i, index1, index2, index3, index4;
+
+    // ================================ Merger Layer 6 and 5 ================================
+	s0 = (32s)mq18433_iGM_p.[32];
+	s1 = (32s)mq18433_iGM_p.[64];
+	s2 = (32s)mq18433_iGM_p.[66];
+
+	index1 = 0;
+	index2 = 16;
+	index3 = 32;
+	index4 = 48;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[34];
+	s1 = (32s)mq18433_iGM_p.[68];
+	s2 = (32s)mq18433_iGM_p.[70];
+
+	index1 = 64;
+	index2 = 80;
+	index3 = 96;
+	index4 = 112;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[36];
+	s1 = (32s)mq18433_iGM_p.[72];
+	s2 = (32s)mq18433_iGM_p.[74];
+
+	index1 = 128;
+	index2 = 144;
+	index3 = 160;
+	index4 = 176;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[38];
+	s1 = (32s)mq18433_iGM_p.[76];
+	s2 = (32s)mq18433_iGM_p.[78];
+
+	index1 = 192;
+	index2 = 208;
+	index3 = 224;
+	index4 = 240;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[40];
+	s1 = (32s)mq18433_iGM_p.[80];
+	s2 = (32s)mq18433_iGM_p.[82];
+
+	index1 = 256;
+	index2 = 272;
+	index3 = 288;
+	index4 = 304;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[42];
+	s1 = (32s)mq18433_iGM_p.[84];
+	s2 = (32s)mq18433_iGM_p.[86];
+
+	index1 = 320;
+	index2 = 336;
+	index3 = 352;
+	index4 = 368;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[44];
+	s1 = (32s)mq18433_iGM_p.[88];
+	s2 = (32s)mq18433_iGM_p.[90];
+
+	index1 = 384;
+	index2 = 400;
+	index3 = 416;
+	index4 = 432;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[46];
+	s1 = (32s)mq18433_iGM_p.[92];
+	s2 = (32s)mq18433_iGM_p.[94];
+
+	index1 = 448;
+	index2 = 464;
+	index3 = 480;
+	index4 = 496;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[48];
+	s1 = (32s)mq18433_iGM_p.[96];
+	s2 = (32s)mq18433_iGM_p.[98];
+
+	index1 = 512;
+	index2 = 528;
+	index3 = 544;
+	index4 = 560;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[50];
+	s1 = (32s)mq18433_iGM_p.[100];
+	s2 = (32s)mq18433_iGM_p.[102];
+
+	index1 = 576;
+	index2 = 592;
+	index3 = 608;
+	index4 = 624;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[52];
+	s1 = (32s)mq18433_iGM_p.[104];
+	s2 = (32s)mq18433_iGM_p.[106];
+
+	index1 = 640;
+	index2 = 656;
+	index3 = 672;
+	index4 = 688;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[54];
+	s1 = (32s)mq18433_iGM_p.[108];
+	s2 = (32s)mq18433_iGM_p.[110];
+
+	index1 = 704;
+	index2 = 720;
+	index3 = 736;
+	index4 = 752;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[56];
+	s1 = (32s)mq18433_iGM_p.[112];
+	s2 = (32s)mq18433_iGM_p.[114];
+
+	index1 = 768;
+	index2 = 784;
+	index3 = 800;
+	index4 = 816;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[58];
+	s1 = (32s)mq18433_iGM_p.[116];
+	s2 = (32s)mq18433_iGM_p.[118];
+
+	index1 = 832;
+	index2 = 848;
+	index3 = 864;
+	index4 = 880;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[60];
+	s1 = (32s)mq18433_iGM_p.[120];
+	s2 = (32s)mq18433_iGM_p.[122];
+
+	index1 = 896;
+	index2 = 912;
+	index3 = 928;
+	index4 = 944;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[62];
+	s1 = (32s)mq18433_iGM_p.[124];
+	s2 = (32s)mq18433_iGM_p.[126];
+
+	index1 = 960;
+	index2 = 976;
+	index3 = 992;
+	index4 = 1008;
+	for i = 0 to 4
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================ Merger Layer 4 and 3 ================================
+	s0 = (32s)mq18433_iGM_p.[8];
+	s1 = (32s)mq18433_iGM_p.[16];
+	s2 = (32s)mq18433_iGM_p.[18];
+
+	index1 = 0;
+	index2 = 64;
+	index3 = 128;
+	index4 = 192;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[10];
+	s1 = (32s)mq18433_iGM_p.[20];
+	s2 = (32s)mq18433_iGM_p.[22];
+
+	index1 = 256;
+	index2 = 320;
+	index3 = 384;
+	index4 = 448;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[12];
+	s1 = (32s)mq18433_iGM_p.[24];
+	s2 = (32s)mq18433_iGM_p.[26];
+
+	index1 = 512;
+	index2 = 576;
+	index3 = 640;
+	index4 = 704;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================================================
+	s0 = (32s)mq18433_iGM_p.[14];
+	s1 = (32s)mq18433_iGM_p.[28];
+	s2 = (32s)mq18433_iGM_p.[30];
+
+	index1 = 768;
+	index2 = 832;
+	index3 = 896;
+	index4 = 960;
+	for i = 0 to 16
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}
+	// ================================ Merger Layer 2 and 1 ================================
+	s0 = (32s)mq18433_iGM_p.[2];
+	s1 = (32s)mq18433_iGM_p.[4];
+	s2 = (32s)mq18433_iGM_p.[6];
+
+	index1 = 0;
+	index2 = 256;
+	index3 = 512;
+	index4 = 768;
+	reg u32 res1, res2, res3, res4, r_div_q;
+	r_div_q = 0x38E2C;
+	
+	for i = 0 to 64
+	{
+		x1 = (32u)a.[index1];
+		x2 = (32u)a.[index2];
+		x3 = (32u)a.[index3];
+		x4 = (32u)a.[index4];
+		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
+
+		// Scaling the results into the same range as the reference implementation
+		x1 = montymul2_jazz(x1, 12744, q, q_inv); // 3186 = Multiply by 2^(-8) 12744
+		x2 = montymul2_jazz(x2, 12744, q, q_inv); 
+		x3 = montymul2_jazz(x3, 12744, q, q_inv); 
+		x4 = montymul2_jazz(x4, 12744, q, q_inv);
+		res1 = #SMMUL(x1, r_div_q);
+		x1 = x1 - res1 * q;//temp = #MLS(res, q, temp);
+		res2 = #SMMUL(x2, r_div_q);
+		x2 = x2 - res2 * q;//temp = #MLS(res, q, temp);
+		res3 = #SMMUL(x3, r_div_q);
+		x3 = x3 - res3 * q;//temp = #MLS(res, q, temp);
+		res4 = #SMMUL(x4, r_div_q);
+		x4 = x4 - res4 * q;//temp = #MLS(res, q, temp);
+
+		a.[index1] = (32u) x4;
+		a.[index2] = (32u) x3;
+		a.[index3] = (32u) x2;
+		a.[index4] = (32u) x1;
+		index1 += 4;
+		index2 += 4;
+		index3 += 4;
+		index4 += 4;
+	}	
+	return a;
+}
+
+export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secret reg ptr u8[112] priv, #public reg u32 mlen) -> #public reg u32
+{
+	sig = sig; sm = sm; priv = priv; mlen = mlen;
+    () = #spill(sig, sm, priv, mlen);
+	
+    stack u8[256] g;
+  	reg ptr u8[256] pg;
+  	pg = g;
+
+    stack u8[256] f;
+  	reg ptr u8[256] pf;
+  	pf = f;
+
+    () = #unspill(priv);
+    pf, pg = regenfg8_2_jazz(pf, pg, priv);
+	() = #spill(pf, pg);
+
+	reg u32 temp;
+
+	() = #unspill(priv);
+	reg ptr u8[32] phpub;
+	phpub = priv[80:32];
+	() = #spill(phpub);
+
+	stack u8[64] hm;
+  	reg ptr u8[64] phm;
+  	phm = hm;
+    
+	() = #unspill(sm, phpub, mlen);
+	phm = shake_init_injectx2_flip_extract_2_jazz(phm, sm, phpub, mlen);
+	() = #spill(phm);
+
+	// ---------------------------------------------------------------------------------
+	
+	reg u32 attempt;
+	attempt = 0;
+
+	stack u8[40] salt;
+	reg ptr u8[40] psalt;
+	psalt = salt;
+
+	stack u8[64] h0;
+	reg ptr u8[64] ph0;
+	ph0 = h0;
+
+	reg ptr u8[32] ph0_copy;
+
+	stack u8[32] f2;
+	reg ptr u8[32] pf2;
+	pf2 = f2;
+
+	stack u8[32] g2;
+	reg ptr u8[32] pg2;
+	pg2 = g2;
+
+	stack u8[512] ax;
+	reg ptr u8[512] x;
+	x = ax;
+
+	reg ptr u8[256] x0;
+
+	reg ptr u32[256] xyz1;
+
+	reg ptr u32[256] xyz2;
+
+	stack u32[512] axyz;
+	reg ptr u32[512] xyz;
+	xyz = axyz;
+
+	stack u32[512] aw2_3_32;
+	reg ptr u32[512] w2_3_32;
+	w2_3_32 = aw2_3_32;
+
+	stack u32[256] aw2_32;
+	reg ptr u32[256] w2_32;
+	w2_32 = aw2_32;
+
+	stack u32[256] aw3_32;
+	reg ptr u32[256] w3_32;
+	w3_32 = aw3_32;
+
+	stack u16[256] ares;
+	reg ptr u16[256] res;
+	res = ares;
+
+	reg u32 cond;
+	cond = 1;
+	() = #spill(cond, res, w3_32, w2_32, w2_3_32, xyz, xyz1, xyz2, x0, x, pg2, pf2, ph0_copy, ph0, psalt, attempt);
+
+	while (cond == 1)
+	{
+		() = #unspill(psalt);
+		temp = 42;
+		// ============= SHOULD BE FILLED WITH RANDOM BYTES =============
+		psalt[0] = temp;
+		psalt[1] = temp;
+		psalt[2] = temp;
+		psalt[3] = temp;
+		psalt[4] = temp;
+		psalt[5] = temp;
+		psalt[6] = temp;
+		psalt[7] = temp;
+		psalt[8] = temp;
+		psalt[9] = temp;
+		psalt[10] = temp;
+		psalt[11] = temp;
+		psalt[12] = temp;
+		psalt[13] = temp;
+		// ==============================================================
+		() = #spill(psalt);
+		
+		() = #unspill(psalt, phm, priv, attempt);
+		psalt = shake_init_injectx4_flip_extract_jazz(psalt, phm, priv, attempt);
+		() = #spill(psalt);
+		
+		() = #unspill(ph0, phm, psalt);
+		ph0 = shake_init_injectx2_flip_extract_jazz(ph0, phm, psalt);
+		
+		() = #unspill(ph0_copy);
+		ph0_copy = ph0[0:32];
+		() = #spill(ph0_copy);
+
+		reg ptr u8[32] ph1;
+		ph1 = ph0[32:32];
+		() = #spill(ph0, ph1);
+
+		() = #unspill(pf2, pf);
+		pf2 = extractLowbit2_jazz(pf2, pf);
+		() = #spill(pf2);
+
+		() = #unspill(pg2, pg);
+		pg2 = extractLowbit2_jazz(pg2, pg);
+		() = #spill(pg2);
+		
+		stack u8[32] at0;
+		reg ptr u8[32] t0;
+		t0 = at0;
+		() = #unspill(ph0_copy, pf2);
+		t0 = bpMulMod256New2_jazz(t0, ph0_copy, pf2);
+		() = #spill(t0);
+
+		stack u8[32] aw111;
+		reg ptr u8[32] w111;
+		w111 = aw111;
+		() = #unspill(ph1, priv);
+		reg ptr u8[32] F2;
+		F2 = priv[16:32];
+		w111 = bpMulMod256New2_jazz(w111, ph1, F2);
+		() = #spill(w111);
+
+		() = #unspill(t0, w111);
+		t0 = bpXor256_2_jazz(t0, t0, w111);
+		() = #spill(t0);
+
+		stack u8[32] at1;
+		reg ptr u8[32] t1;
+		t1 = at1;
+		() = #unspill(ph0_copy, pg2);
+		t1 = bpMulMod256New2_jazz(t1, ph0_copy, pg2);
+		() = #spill(t1);
+
+		() = #unspill(priv, w111, ph1);
+		reg ptr u8[32] G2;
+		G2 = priv[48:32];
+		w111 = bpMulMod256New2_jazz(w111, ph1, G2);
+
+		() = #unspill(t1);
+		t1 = bpXor256_2_jazz(t1, t1, w111);
+		() = #spill(t1, w111);
+
+		reg u32 xsn;
+		
+		() = #unspill(t0, t1, x, phm, priv, attempt);
+		stack u8[64] at;
+		reg ptr u8[64] t;
+		t = at;
+		t[0:32] = t0;
+		t[32:32] = t1;
+		x, xsn = sig_gauss_2_jazz(x, phm, priv, t, attempt);
+		x = x;
+		xsn = xsn;
+		() = #spill(x);
+
+		reg u32 should_skip, max_xnorm;
+		should_skip = 0;
+		max_xnorm = 2223;
+		
+		reg bool b;
+		#declassify b = xsn > max_xnorm;
+		if (b)
+		//if (xsn > max_xnorm)
+		{
+			should_skip = 1;
+		}
+				
+		stack u32[256] aw1_32;
+		reg ptr u32[256] w1_32;
+		w1_32 = aw1_32;
+		() = #spill(w1_32);
+
+		reg u32 ps;
+		ps = 0;
+
+		stack u8[128] ah1buf;
+		reg ptr u8[128] h1buf;
+		h1buf = ah1buf;
+		reg int loop_ctr;
+		() = #unspill(ph1);
+		for loop_ctr = 0 to 32
+		{
+			temp = (32u)ph1[loop_ctr]; h1buf[loop_ctr] = temp;
+		}
+		() = #spill(h1buf);
+		
+		reg u32 lim;
+		lim = 0;
+		
+		if (should_skip == 0)
+		{
+			() = #unspill(xyz, pg);
+			xyz = polysetsmallinplacelow_2_jazz(xyz, pg);
+
+			() = #unspill(xyz1, xyz2, x0, x);
+			x0 = x[0:256];
+			xyz2 = xyz[256:256];
+			xyz2 = polysetsmallinplacehigh_2_jazz(xyz2, x0);
+			() = #spill(x0);
+			
+			xyz2 = NTT_unrolled_for_loop_jazz(xyz2);
+			xyz[256:256] = xyz2;
+			() = #spill(xyz2);
+			xyz1 = xyz[0:256];
+			xyz1 = NTT_unrolled_for_loop_jazz(xyz1);
+			xyz[0:256] = xyz1;
+			() = #spill(xyz1);
+			
+
+			() = #unspill(w1_32);
+			w1_32 = improvedMul_2_jazz(w1_32, xyz);
+			() = #spill(xyz, w1_32);
+
+			() = #unspill(x, w2_32);
+			reg ptr u8[256] x1;
+			x1 = x[256:256];
+			w2_32 = polysetsmall_2_jazz(w2_32, x1);
+
+			() = #unspill(w3_32, pf);
+			w3_32 = polysetsmallinplacehigh_2_jazz(w3_32, pf);
+
+			w2_32 = NTT_unrolled_for_loop_jazz(w2_32);
+			w3_32 = NTT_unrolled_for_loop_jazz(w3_32);
+			() = #unspill(w2_3_32);
+			w2_3_32[0:256] = w2_32;
+			w2_3_32[256:256] = w3_32;
+			() = #spill(w2_32);			
+
+			w3_32 = improvedMul_2_jazz(w3_32, w2_3_32);
+			() = #spill(w2_3_32);
+			
+			() = #unspill(w1_32);
+			w3_32 = bigmul_2_jazz(w3_32, w1_32);
+
+			() = #unspill(res);
+			w3_32 = iNTT_unrolled_jazz(w3_32);
+
+			res, ps = polySnormSymbreak_2_jazz(res, w3_32);
+			() = #spill(w3_32);
+
+			() = #unspill(h1buf);
+			ps -= 1;
+			res, lim = unnamed_2_jazz(res, h1buf, ps);
+			() = #spill(res);
+
+			reg u32 should_skip2;
+			should_skip2 = 0;
+
+			reg bool b2;
+			#declassify b2 = lim == 0;
+			if (b2)
+			//if (lim == 0)
+			{
+				() = #unspill(pf, pg, priv);
+				pf, pg = regenfg8_2_jazz(pf, pg, priv);
+				() = #spill(pf, pg);
+				should_skip2 = 1;
+			}
+			() = #unspill(res);
+			if (should_skip2 == 0)
+			{
+				() = #unspill(sig, psalt, cond);
+				lim = encodeSig_2_jazz(sig, psalt, res);
+				if (lim == 1)
+				{
+					cond = 0; 
+					() = #spill(cond);
+				}
+				else 
+				{
+					() = #unspill(pf, pg, priv);
+					pf, pg = regenfg8_2_jazz(pf, pg, priv);
+					() = #spill(pf, pg);
+				}
+			}
+		}
+		() = #unspill(attempt, cond);
+		attempt += 2;
+		() = #spill(attempt);
+	}
+	temp = 1;
+    return temp;
+}
