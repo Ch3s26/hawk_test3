@@ -1,6 +1,6 @@
-require "ext/keccakf1600_pqm4.jinc"
+require "keccakf1600_pqm4.jinc"
 require "arrays.jinc"
-require "ext/fips202.jinc"
+require "fips202.jinc"
 
 inline fn montyR(reg u32 r0 r1 q) -> reg u32
 {
@@ -12,7 +12,7 @@ inline fn montyR(reg u32 r0 r1 q) -> reg u32
 	return r1;
 }
 
-inline fn schoolbookmul_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b, reg u32 zeta) -> reg ptr u32[4]
+inline fn schoolbookmul_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b, reg u32 zeta) -> reg ptr u32[4]
 {
 	reg u32 r0, r1, k0, k1, k2, k3, b0, b1, b2, b3, q;
 	q = 18433;
@@ -26,34 +26,34 @@ inline fn schoolbookmul_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4
 	b2 = (32s)b.[8];
 	b3 = (32s)b.[12];
 
-	r0, r1 = #SMULL(k1, b3);
+	r1, r0 = #SMULL(k1, b3);
 	r1, r0 = #SMLAL(r1, r0, k2, b2);
 	r1, r0 = #SMLAL(r1, r0, k3, b1);
 	r1  = montyR(r1, r0, q);
-	r0, r1 = #SMULL(r1, zeta);
+	r1, r0 = #SMULL(r1, zeta);
 	r1, r0 = #SMLAL(r1, r0, k0, b0);
 	r1  = montyR(r1, r0, q);
 	d.[0] = r1;
 
-	r0, r1 = #SMULL(k2, b3);
+	r1, r0 = #SMULL(k2, b3);
 	r1, r0 = #SMLAL(r1, r0, k3, b2);
 	r1  = montyR(r1, r0, q);
-	r0, r1 = #SMULL(r1, zeta);
+	r1, r0 = #SMULL(r1, zeta);
 	r1, r0 = #SMLAL(r1, r0, k0, b1);
 	r1, r0 = #SMLAL(r1, r0, k1, b0);
 	r1  = montyR(r1, r0, q);
 	d.[4] = r1;
 
-	r0, r1 = #SMULL(k3, b3);
+	r1, r0 = #SMULL(k3, b3);
 	r1 = montyR(r1, r0, q);
-	r0, r1 = #SMULL(r1, zeta);
+	r1, r0 = #SMULL(r1, zeta);
 	r1, r0 = #SMLAL(r1, r0, k0, b2);
 	r1, r0 = #SMLAL(r1, r0, k1, b1);
 	r1, r0 = #SMLAL(r1, r0, k2, b0);
 	r1  = montyR(r1, r0, q);
 	d.[8] = r1;
 
-	r0, r1 = #SMULL(k0, b3);
+	r1, r0 = #SMULL(k0, b3);
 	r1, r0 = #SMLAL(r1, r0, k1, b2);
 	r1, r0 = #SMLAL(r1, r0, k2, b1);
 	r1, r0 = #SMLAL(r1, r0, k3, b0);
@@ -63,7 +63,7 @@ inline fn schoolbookmul_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4
 	return d;
 }
 
-inline fn improvedMul_2_jazz(reg ptr u32[256] d, reg ptr u32[512] a) -> reg ptr u32[256]
+inline fn improvedMul_jazz(reg ptr u32[256] d, reg ptr u32[512] a) -> reg ptr u32[256]
 {
 	reg u32 zeta, neg_zeta;
 
@@ -88,7 +88,7 @@ inline fn improvedMul_2_jazz(reg ptr u32[256] d, reg ptr u32[512] a) -> reg ptr 
 		input2 = a[ctr2:4];
 		reg ptr u32[4] output;
 		output = d[ctr1:4];
-		output = schoolbookmul_2_jazz(output, input1, input2, zeta);
+		output = schoolbookmul_jazz(output, input1, input2, zeta);
 		() = #unspill(d, a);
 		d[ctr1:4] = output;
 
@@ -100,7 +100,7 @@ inline fn improvedMul_2_jazz(reg ptr u32[256] d, reg ptr u32[512] a) -> reg ptr 
 		output = d[ctr1:4];
 		neg_zeta = 0-zeta;
 		() = #spill(d);
-		output = schoolbookmul_2_jazz(output, input1, input2, neg_zeta);
+		output = schoolbookmul_jazz(output, input1, input2, neg_zeta);
 		() = #unspill(d);
 		d[ctr1:4] = output;
 		() = #spill(d);
@@ -112,11 +112,11 @@ inline fn improvedMul_2_jazz(reg ptr u32[256] d, reg ptr u32[512] a) -> reg ptr 
 	return d;
 }
 
-inline fn montymul2_jazz(reg u32 x y q q_inv) -> reg u32
+inline fn montymul_jazz(reg u32 x y q q_inv) -> reg u32
 {
     reg u32 tmp0, tmp1;
 
-	x, tmp0 = #SMULL(x, y);
+	tmp0, x = #SMULL(x, y);
 	tmp1 = #MUL(tmp0, q_inv);
 	_, x = #SMLAL(tmp0, x, tmp1, q);
 
@@ -174,14 +174,14 @@ inline fn bpMul32_jazz(reg u32 x, reg u32 y) -> reg u32, reg u32
 	y2 = y & 0x44444444;
 	y3 = y & 0x88888888;
 	
-	z_1, z_2 = #UMULL(x0, y0);
-	temp_1, temp_2 = #UMULL(x1, y3);
+	z_2, z_1 = #UMULL(x0, y0);
+	temp_2, temp_1 = #UMULL(x1, y3);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x2, y2);
+	temp_2, temp_1 = #UMULL(x2, y2);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x3, y1);
+	temp_2, temp_1 = #UMULL(x3, y1);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
 	z_1 &= 0x11111111;
@@ -189,14 +189,14 @@ inline fn bpMul32_jazz(reg u32 x, reg u32 y) -> reg u32, reg u32
 	s_z0_1 = z_1;
 	s_z0_2 = z_2;
 
-	z_1, z_2 = #UMULL(x0, y1);
-	temp_1, temp_2 = #UMULL(x1, y0);
+	z_2, z_1 = #UMULL(x0, y1);
+	temp_2, temp_1 = #UMULL(x1, y0);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x2, y3);
+	temp_2, temp_1 = #UMULL(x2, y3);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x3, y2);
+	temp_2, temp_1 = #UMULL(x3, y2);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
 	z_1 &= 0x22222222;
@@ -204,14 +204,14 @@ inline fn bpMul32_jazz(reg u32 x, reg u32 y) -> reg u32, reg u32
 	s_z1_1 = z_1;
 	s_z1_2 = z_2;
 	
-	z_1, z_2 = #UMULL(x0, y2);
-	temp_1, temp_2 = #UMULL(x1, y1);
+	z_2, z_1 = #UMULL(x0, y2);
+	temp_2, temp_1 = #UMULL(x1, y1);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x2, y0);
+	temp_2, temp_1 = #UMULL(x2, y0);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x3, y3);
+	temp_2, temp_1 = #UMULL(x3, y3);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
 	z_1 &= 0x44444444;
@@ -219,14 +219,14 @@ inline fn bpMul32_jazz(reg u32 x, reg u32 y) -> reg u32, reg u32
 	s_z2_1 = z_1;
 	s_z2_2 = z_2;
 	
-	z_1, z_2 = #UMULL(x0, y3);
-	temp_1, temp_2 = #UMULL(x1, y2);
+	z_2, z_1 = #UMULL(x0, y3);
+	temp_2, temp_1 = #UMULL(x1, y2);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x2, y1);
+	temp_2, temp_1 = #UMULL(x2, y1);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
-	temp_1, temp_2 = #UMULL(x3, y0);
+	temp_2, temp_1 = #UMULL(x3, y0);
 	z_1 ^= temp_1;
 	z_2 ^= temp_2;
 	z_1 &= 0x88888888;
@@ -264,7 +264,7 @@ inline fn memset(reg u32 d)
 	(u32)[d+28] = null;
 }
 
-inline fn test(reg u32 hi p_odd lo_low lo_high) -> reg u32
+inline fn inner_jazz(reg u32 hi p_odd lo_low lo_high) -> reg u32
 {
 	reg u32 r, tlo0_low, tlo0_high, tlo_low, tlo_high, temp, carry, diff_high, cc, thi, thi0;
 	reg bool cf;
@@ -481,32 +481,6 @@ inline fn test(reg u32 hi p_odd lo_low lo_high) -> reg u32
 
 	temp = r;
 	return temp;
-}
-
-inline fn unnamed_jazz(reg u32 ps s1 h1buf) -> reg u32
-{
-	reg u32 nm, z, temp1, y, lim, minus_512;
-	nm = #ASR(ps, 31);
-	nm = #MVN(nm);
-	lim = 512;
-	minus_512 = 4294966784;
-	inline int u;
-	for u = 0 to 256
-	{
-		z = (32s)(u16)[s1+2*u];
-		z = z ^ nm;
-		z = z - nm;
-		temp1 = (32u)(u8)[h1buf+(u >> 3)];
-		temp1 = temp1 >> (u & 7);
-		temp1 &= 1;
-		z = z + temp1;
-		y = z >>s 1;
-		lim = 0 if y <s minus_512;
-		lim = 0 if y >=s 512;
-		(u16)[s1+2*u] = y;
-	}
-	ps = lim;
-	return ps;
 }
 
 // ================ SHAKE-related functions ================
@@ -1195,7 +1169,7 @@ inline fn shake_init_injectx2_flip_extract_jazz(reg ptr u32[16] h0, reg ptr u8[6
 }
 // =========================================================
 
-inline fn regenfg8_2_jazz(reg ptr u8[256] f, reg ptr u8[256] g, reg ptr u8[112] priv) -> reg ptr u8[256], reg ptr u8[256]
+inline fn regenfg8_jazz(reg ptr u8[256] f, reg ptr u8[256] g, reg ptr u8[112] priv) -> reg ptr u8[256], reg ptr u8[256]
 {
 	f = f; g = g; priv = priv;
 	() = #spill(f, g, priv);
@@ -1379,7 +1353,7 @@ inline fn regenfg8_2_jazz(reg ptr u8[256] f, reg ptr u8[256] g, reg ptr u8[112] 
 	return f, g;
 }
 
-inline fn extractLowbit2_jazz(reg ptr u32[8] d, reg ptr u32[64] a) -> reg ptr u32[8]
+inline fn extractLowbit_jazz(reg ptr u32[8] d, reg ptr u32[64] a) -> reg ptr u32[8]
 {
 	reg u32 u, res1, res2, res3, res4, val, temp, one;
 	one = 1;
@@ -1488,7 +1462,7 @@ inline fn extractLowbit2_jazz(reg ptr u32[8] d, reg ptr u32[64] a) -> reg ptr u3
 	return d;
 }
 
-inline fn bpXor12864_2_jazz(reg ptr u32[4] d128, reg ptr u32[4] d64, reg ptr u32[8] a) -> reg ptr u32[4], reg ptr u32[4]
+inline fn bpXor12864_jazz(reg ptr u32[4] d128, reg ptr u32[4] d64, reg ptr u32[8] a) -> reg ptr u32[4], reg ptr u32[4]
 {
 	reg u32 a0, a4, a8, a12, a16, a20, a24, a28, res0_128, res1_128, res2_128, res3_128, res0_64, res1_64, res2_64, res3_64;
 	
@@ -1520,7 +1494,7 @@ inline fn bpXor12864_2_jazz(reg ptr u32[4] d128, reg ptr u32[4] d64, reg ptr u32
 	return d128, d64;
 }
 
-inline fn bpXor128_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b) -> reg ptr u32[4]
+inline fn bpXor128_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b) -> reg ptr u32[4]
 {
 	reg u32 a0, b0, a4, b4, a8, b8, a12, b12, res0, res1, res2, res3;
 
@@ -1544,7 +1518,7 @@ inline fn bpXor128_2_jazz(reg ptr u32[4] d, reg ptr u32[4] a, reg ptr u32[4] b) 
 	return d;
 }
 
-inline fn bpXor64_2_jazz(reg ptr u32[2] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[2]
+inline fn bpXor64_jazz(reg ptr u32[2] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[2]
 {
 	reg u32 a0, b0, a4, b4, res0, res1;
 	
@@ -1560,7 +1534,7 @@ inline fn bpXor64_2_jazz(reg ptr u32[2] d, reg ptr u32[2] a, reg ptr u32[2] b) -
 	return d;
 }
 
-inline fn bpXor256_2_jazz(reg ptr u32[8] d, reg ptr u32[8] a, reg ptr u32[8] b) -> reg ptr u32[8]
+inline fn bpXor256_jazz(reg ptr u32[8] d, reg ptr u32[8] a, reg ptr u32[8] b) -> reg ptr u32[8]
 {
 	reg u32 res0, res1, res2, res3, res4, res5, res6, res7, val_a, val_b, val_a_2, val_b_2, val_a_3, val_b_3, val_a_4, val_b_4;
 
@@ -1601,7 +1575,7 @@ inline fn bpXor256_2_jazz(reg ptr u32[8] d, reg ptr u32[8] a, reg ptr u32[8] b) 
 	return d;
 }
 
-inline fn bpMulAdd64_2_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[4]
+inline fn bpMulAdd64_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[4]
 {
 	reg u32 a0, a1, b0, b1, c0_lo, c0_hi, c1_lo, c1_hi, c2_lo, c2_hi, d_lo, d_hi, d_lo_2, d_hi_2, res_lo, res_hi, in1, in2;
 
@@ -1646,7 +1620,7 @@ inline fn bpMulAdd64_2_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b
 	return d;
 }
 
-inline fn bpMulAdd64_dzero_2_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[4]
+inline fn bpMulAdd64_dzero_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u32[2] b) -> reg ptr u32[4]
 {
 	reg u32 a0, a1, b0, b1, c0_lo, c0_hi, c1_lo, c1_hi, c2_lo, c2_hi, in1, in2;
 
@@ -1683,7 +1657,7 @@ inline fn bpMulAdd64_dzero_2_jazz(reg ptr u32[4] d, reg ptr u32[2] a, reg ptr u3
 	return d;
 }
 
-inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32] b) -> reg ptr u8[32]
+inline fn bpMulMod256New_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32] b) -> reg ptr u8[32]
 {
 	//t1 = tmp;
 	stack u8[32] at1;
@@ -1726,7 +1700,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	reg ptr u8[16] d_16_plus_0;
 	d_16_plus_0 = d[0:16];
 	() = #unspill(a);
-	d_16_plus_0, resXor64_a = bpXor12864_2_jazz(d_16_plus_0, resXor64_a, a);
+	d_16_plus_0, resXor64_a = bpXor12864_jazz(d_16_plus_0, resXor64_a, a);
 	d[0:16] = d_16_plus_0;
 	() = #spill(resXor64_a, d_16_plus_0);
 	
@@ -1734,7 +1708,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	reg ptr u8[16] d_16_plus_16;
 	d_16_plus_16 = d[16:16];
 	() = #unspill(b);
-	d_16_plus_16, resXor64_b = bpXor12864_2_jazz(d_16_plus_16, resXor64_b, b);
+	d_16_plus_16, resXor64_b = bpXor12864_jazz(d_16_plus_16, resXor64_b, b);
 	d[16:16] = d_16_plus_16;
 	() = #spill(d, resXor64_b, d_16_plus_16);
 
@@ -1748,7 +1722,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	() = #unspill(t22);
 	reg ptr u8[8] t22_8_plus_0;
 	t22_8_plus_0 = t22[0:8];
-	t22_8_plus_0 = bpXor64_2_jazz(t22_8_plus_0, d_8_plus_0, d_8_plus_8);
+	t22_8_plus_0 = bpXor64_jazz(t22_8_plus_0, d_8_plus_0, d_8_plus_8);
 	t22[0:8] = t22_8_plus_0;
 	() = #spill(t22_8_plus_0, d_8_plus_0, d_8_plus_8);
 
@@ -1760,7 +1734,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	d_8_plus_24 = d[24:8];
 	reg ptr u8[8] t22_8_plus_8;
 	t22_8_plus_8 = t22[8:8];
-	t22_8_plus_8 = bpXor64_2_jazz(t22_8_plus_8, d_8_plus_16, d_8_plus_24);
+	t22_8_plus_8 = bpXor64_jazz(t22_8_plus_8, d_8_plus_16, d_8_plus_24);
 	t22[8:8] = t22_8_plus_8;
 	() = #spill(t22, t22_8_plus_8, d_8_plus_16, d_8_plus_24);
 	
@@ -1774,21 +1748,21 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	t1_16_plus_16 = t1[16:16];
 	() = #spill(t1_16_plus_0, t1_16_plus_16);
 	//() = #unspill(t2_16_plus_0);
-	t2_16_plus_0 = bpMulAdd64_dzero_2_jazz(t2_16_plus_0, t22_8_plus_0, t22_8_plus_8);
+	t2_16_plus_0 = bpMulAdd64_dzero_jazz(t2_16_plus_0, t22_8_plus_0, t22_8_plus_8);
 	() = #unspill(t2);
 	t2[0:16] = t2_16_plus_0;
 	() = #spill(t2, t2_16_plus_0);
 
 	// bpMulAdd64_jazz(t1, d, d + 16);
 	() = #unspill(t1_16_plus_0, d_8_plus_0, d_8_plus_16);
-	t1_16_plus_0 = bpMulAdd64_dzero_2_jazz(t1_16_plus_0, d_8_plus_0, d_8_plus_16);
+	t1_16_plus_0 = bpMulAdd64_dzero_jazz(t1_16_plus_0, d_8_plus_0, d_8_plus_16);
 	() = #unspill(t1);
 	t1[0:16] = t1_16_plus_0;
 	() = #spill(t1, t1_16_plus_0);
 
 	// bpMulAdd64_jazz(t1 + 16, d + 8, d + 24);
 	() = #unspill(t1_16_plus_16, d_8_plus_8, d_8_plus_24);
-	t1_16_plus_16 = bpMulAdd64_dzero_2_jazz(t1_16_plus_16, d_8_plus_8, d_8_plus_24);
+	t1_16_plus_16 = bpMulAdd64_dzero_jazz(t1_16_plus_16, d_8_plus_8, d_8_plus_24);
 	() = #unspill(t1);
 	t1[16:16] = t1_16_plus_16;
 	() = #spill(t1, t1_16_plus_16);
@@ -1801,7 +1775,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	resXor64_a_8_plus_0 = resXor64_a[0:8];
 	reg ptr u8[8] resXor64_b_8_plus_0;
 	resXor64_b_8_plus_0 = resXor64_b[0:8];
-	buf5_16_plus_0 = bpMulAdd64_dzero_2_jazz(buf5_16_plus_0, resXor64_a_8_plus_0, resXor64_b_8_plus_0);
+	buf5_16_plus_0 = bpMulAdd64_dzero_jazz(buf5_16_plus_0, resXor64_a_8_plus_0, resXor64_b_8_plus_0);
 	() = #unspill(buf5);
 	buf5[0:16] = buf5_16_plus_0;
 	() = #spill(buf5, buf5_16_plus_0);
@@ -1812,7 +1786,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	a_8_plus_0 = a[0:8];
 	reg ptr u8[8] b_8_plus_0;
 	b_8_plus_0 = b[0:8];
-	d_16_plus_0 = bpMulAdd64_dzero_2_jazz(d_16_plus_0, a_8_plus_0, b_8_plus_0);
+	d_16_plus_0 = bpMulAdd64_dzero_jazz(d_16_plus_0, a_8_plus_0, b_8_plus_0);
 	() = #unspill(d);
 	d[0:16] = d_16_plus_0;
 	() = #spill(d, d_16_plus_0);
@@ -1823,26 +1797,26 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	a_8_plus_8 = a[8:8];
 	reg ptr u8[8] b_8_plus_8;
 	b_8_plus_8 = b[8:8];
-	d_16_plus_16 = bpMulAdd64_dzero_2_jazz(d_16_plus_16, a_8_plus_8, b_8_plus_8);
+	d_16_plus_16 = bpMulAdd64_dzero_jazz(d_16_plus_16, a_8_plus_8, b_8_plus_8);
 	() = #unspill(d);
 	d[16:16] = d_16_plus_16;
 	() = #spill(d, d_16_plus_16);
 
 	// bpXor128_jazz(buf5, buf5, d);
 	() = #unspill(buf5_16_plus_0, d_16_plus_0);
-	buf5_16_plus_0 = bpXor128_2_jazz(buf5_16_plus_0, buf5_16_plus_0, d_16_plus_0);
+	buf5_16_plus_0 = bpXor128_jazz(buf5_16_plus_0, buf5_16_plus_0, d_16_plus_0);
 	() = #spill(buf5_16_plus_0);
 
 	// bpXor128_jazz(buf5, buf5, d + 16);
 	() = #unspill(d_16_plus_16, buf5_16_plus_0);
-	buf5_16_plus_0 = bpXor128_2_jazz(buf5_16_plus_0, buf5_16_plus_0, d_16_plus_16);
+	buf5_16_plus_0 = bpXor128_jazz(buf5_16_plus_0, buf5_16_plus_0, d_16_plus_16);
 	() = #spill(buf5_16_plus_0);
 
 	// bpXor128_jazz(d + 8, d + 8, buf5);
 	() = #unspill(d, buf5_16_plus_0);
 	reg ptr u8[16] d_16_plus_8;
 	d_16_plus_8 = d[8:16];
-	d_16_plus_8 = bpXor128_2_jazz(d_16_plus_8, d_16_plus_8, buf5_16_plus_0);
+	d_16_plus_8 = bpXor128_jazz(d_16_plus_8, d_16_plus_8, buf5_16_plus_0);
 	() = #unspill(d);
 	d[8:16] = d_16_plus_8;
 	() = #spill(d, d_16_plus_8);
@@ -1853,7 +1827,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	buf6_16_plus_0 = buf6[0:16];
 	d_16_plus_0 = d[0:16];
 	d_16_plus_16 = d[16:16];
-	buf6_16_plus_0 = bpXor128_2_jazz(buf6_16_plus_0, d_16_plus_0, d_16_plus_16);
+	buf6_16_plus_0 = bpXor128_jazz(buf6_16_plus_0, d_16_plus_0, d_16_plus_16);
 	() = #spill(buf6_16_plus_0, d_16_plus_0, d_16_plus_16);
 
 	// bpMulAdd64_jazz(buf6, resXor64_a + 8, resXor64_b + 8);
@@ -1862,7 +1836,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	resXor64_a_8_plus_8 = resXor64_a[8:8];
 	reg ptr u8[8] resXor64_b_8_plus_8;
 	resXor64_b_8_plus_8 = resXor64_b[8:8];
-	buf6_16_plus_0 = bpMulAdd64_2_jazz(buf6_16_plus_0, resXor64_a_8_plus_8, resXor64_b_8_plus_8);
+	buf6_16_plus_0 = bpMulAdd64_jazz(buf6_16_plus_0, resXor64_a_8_plus_8, resXor64_b_8_plus_8);
 	() = #unspill(buf6);
 	buf6[0:16] = buf6_16_plus_0;
 	() = #spill(buf6, buf6_16_plus_0);
@@ -1873,7 +1847,7 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	a_8_plus_16 = a[16:8];
 	reg ptr u8[8] b_8_plus_16;
 	b_8_plus_16 = b[16:8];
-	d_16_plus_0 = bpMulAdd64_2_jazz(d_16_plus_0, a_8_plus_16, b_8_plus_16);
+	d_16_plus_0 = bpMulAdd64_jazz(d_16_plus_0, a_8_plus_16, b_8_plus_16);
 	() = #unspill(d);
 	d[0:16] = d_16_plus_0;
 	() = #spill(d, d_16_plus_0);
@@ -1884,65 +1858,65 @@ inline fn bpMulMod256New2_jazz(reg ptr u8[32] d, reg ptr u8[32] a, reg ptr u8[32
 	a_8_plus_24 = a[24:8];
 	reg ptr u8[8] b_8_plus_24;
 	b_8_plus_24 = b[24:8];
-	d_16_plus_16 = bpMulAdd64_2_jazz(d_16_plus_16, a_8_plus_24, b_8_plus_24);
+	d_16_plus_16 = bpMulAdd64_jazz(d_16_plus_16, a_8_plus_24, b_8_plus_24);
 	() = #unspill(d);
 	d[16:16] = d_16_plus_16;
 	() = #spill(d, d_16_plus_16);
 
 	// bpXor128_jazz(t2, t2, t1);
 	() = #unspill(t2_16_plus_0, t1_16_plus_0);
-	t2_16_plus_0 = bpXor128_2_jazz(t2_16_plus_0, t2_16_plus_0, t1_16_plus_0);
+	t2_16_plus_0 = bpXor128_jazz(t2_16_plus_0, t2_16_plus_0, t1_16_plus_0);
 	
 	// bpXor128_jazz(t2, t2, t1 + 16);
 	() = #unspill(t1_16_plus_16);
-	t2_16_plus_0 = bpXor128_2_jazz(t2_16_plus_0, t2_16_plus_0, t1_16_plus_16);
+	t2_16_plus_0 = bpXor128_jazz(t2_16_plus_0, t2_16_plus_0, t1_16_plus_16);
 
 	// bpXor128_jazz(t1 + 8, t1 + 8, t2);
 	() = #unspill(t1, t1_16_plus_16);
 	reg ptr u8[16] t1_16_plus_8;
 	t1_16_plus_8 = t1[8:16];
-	t1_16_plus_8 = bpXor128_2_jazz(t1_16_plus_8, t1_16_plus_8, t2_16_plus_0);
+	t1_16_plus_8 = bpXor128_jazz(t1_16_plus_8, t1_16_plus_8, t2_16_plus_0);
 	() = #unspill(t1);
 	t1[8:16] = t1_16_plus_8;
 	() = #spill(t1);
 
 	// bpXor128_jazz(buf6, buf6, d);
 	() = #unspill(buf6_16_plus_0, d_16_plus_0);
-	buf6_16_plus_0 = bpXor128_2_jazz(buf6_16_plus_0, buf6_16_plus_0, d_16_plus_0);
+	buf6_16_plus_0 = bpXor128_jazz(buf6_16_plus_0, buf6_16_plus_0, d_16_plus_0);
 
 	// bpXor128_jazz(buf6, buf6, d + 16);
 	() = #unspill(d_16_plus_16);
-	buf6_16_plus_0 = bpXor128_2_jazz(buf6_16_plus_0, buf6_16_plus_0, d_16_plus_16);
+	buf6_16_plus_0 = bpXor128_jazz(buf6_16_plus_0, buf6_16_plus_0, d_16_plus_16);
 
 	// bpXor128_jazz(d + 8, d + 8, buf6);
 	() = #unspill(d);
 	d_16_plus_8 = d[8:16];
-	d_16_plus_8 = bpXor128_2_jazz(d_16_plus_8, d_16_plus_8, buf6_16_plus_0);
+	d_16_plus_8 = bpXor128_jazz(d_16_plus_8, d_16_plus_8, buf6_16_plus_0);
 	() = #unspill(d);
 	d[8:16] = d_16_plus_8;
 	() = #spill(d);
 
 	// bpXor256_jazz(t1, t1, d);
 	() = #unspill(t1, d);
-	t1 = bpXor256_2_jazz(t1, t1, d);
+	t1 = bpXor256_jazz(t1, t1, d);
 
 	// bpXor128_jazz(d, d, t1 + 16);
 	() = #unspill(d);
 	t1_16_plus_16 = t1[16:16];
 	d_16_plus_0 = d[0:16];
-	d_16_plus_0 = bpXor128_2_jazz(d_16_plus_0, d_16_plus_0, t1_16_plus_16);
+	d_16_plus_0 = bpXor128_jazz(d_16_plus_0, d_16_plus_0, t1_16_plus_16);
 	d[0:16] = d_16_plus_0;
 
 	// bpXor128_jazz(d + 16, d + 16, t1);
 	t1_16_plus_0 = t1[0:16];
 	d_16_plus_16 = d[16:16];
-	d_16_plus_16 = bpXor128_2_jazz(d_16_plus_16, d_16_plus_16, t1_16_plus_0);
+	d_16_plus_16 = bpXor128_jazz(d_16_plus_16, d_16_plus_16, t1_16_plus_0);
 	d[16:16] = d_16_plus_16;
 
 	return d;
 }
 
-inline fn sig_gauss_2_jazz(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112] priv, reg ptr u32[16] t, reg u32 attempt) -> reg ptr u8[512], reg u32
+inline fn sig_gauss_jazz(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112] priv, reg ptr u32[16] t, reg u32 attempt) -> reg ptr u8[512], reg u32
 {
 	() = #spill(x, hm, priv, t, attempt);
 
@@ -2107,7 +2081,7 @@ inline fn sig_gauss_2_jazz(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112]
 				pbit >>= temp;
 				pbit &= 1; // OK
 				p_odd = 0 - pbit; // OK
-				r = test(hi, p_odd, lo_low, lo_high);
+				r = inner_jazz(hi, p_odd, lo_low, lo_high);
 				
 				() = #unspill(neg);
 				r <<= 1;
@@ -2135,7 +2109,7 @@ inline fn sig_gauss_2_jazz(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112]
 	return x, sn;
 }
 
-/*
+/* 
 export fn sig_gauss_2_exp(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112] priv, reg ptr u32[16] t) -> reg ptr u8[512]
 {
 	reg u32 attempt, xsn;
@@ -2145,12 +2119,12 @@ export fn sig_gauss_2_exp(reg ptr u8[512] x, reg ptr u8[64] hm, reg ptr u8[112] 
 	t = t;
 	attempt = 0;
 
-	x, xsn = sig_gauss_2_jazz(x, hm, priv, t, attempt);
+	x, xsn = sig_gauss_jazz(x, hm, priv, t, attempt);
 	x = x; xsn = xsn;
 	return x;
 }
 */
-inline fn polysetsmallinplacelow_2_jazz(reg ptr u32[512] d, reg ptr u32[64] a) -> reg ptr u32[512]
+inline fn polysetsmallinplacelow_jazz(reg ptr u32[512] d, reg ptr u32[64] a) -> reg ptr u32[512]
 {
 	reg u32 x, temp, x0, x1, q;
 	q = 18433;
@@ -2171,7 +2145,7 @@ inline fn polysetsmallinplacelow_2_jazz(reg ptr u32[512] d, reg ptr u32[64] a) -
 	return d;
 }
 
-inline fn polysetsmallinplacehigh_2_jazz(reg ptr u32[256] d, reg ptr u32[64] a) -> reg ptr u32[256]
+inline fn polysetsmallinplacehigh_jazz(reg ptr u32[256] d, reg ptr u32[64] a) -> reg ptr u32[256]
 {
 	reg u32 temp, x, x0, x1, q;
 	inline int u, index;
@@ -2192,7 +2166,7 @@ inline fn polysetsmallinplacehigh_2_jazz(reg ptr u32[256] d, reg ptr u32[64] a) 
 	return d;
 }
 
-inline fn polysetsmall_2_jazz(reg ptr u32[256] d, reg ptr u8[256] a) -> reg ptr u32[256]
+inline fn polysetsmall_jazz(reg ptr u32[256] d, reg ptr u8[256] a) -> reg ptr u32[256]
 {
     reg u32 temp1, temp2, temp3, temp4, temp5, temp6, temp7, temp8, q;
 	q = 18433;
@@ -2247,7 +2221,7 @@ inline fn polysetsmall_2_jazz(reg ptr u32[256] d, reg ptr u8[256] a) -> reg ptr 
 	return d;
 }
 
-inline fn bigmul_2_jazz(reg ptr u32[256] a, reg ptr u32[256] b) -> reg ptr u32[256]
+inline fn bigmul_jazz(reg ptr u32[256] a, reg ptr u32[256] b) -> reg ptr u32[256]
 {
 	reg u32 val1, val2, val1_, val2_, val1__, val2__, val1___, val2___, constant, temp, temp_, temp__, temp___, q, q_inv;
 	q = 18433;
@@ -2273,10 +2247,10 @@ inline fn bigmul_2_jazz(reg ptr u32[256] a, reg ptr u32[256] b) -> reg ptr u32[2
 		val1_ = val1_ - val2_;
 		val1__ = val1__ - val2__;
 		val1___ = val1___ - val2___;
-		temp = montymul2_jazz(constant, val1, q, q_inv);
-		temp_ = montymul2_jazz(constant, val1_, q, q_inv);
-		temp__ = montymul2_jazz(constant, val1__, q, q_inv);
-		temp___ = montymul2_jazz(constant, val1___, q, q_inv);
+		temp = montymul_jazz(constant, val1, q, q_inv);
+		temp_ = montymul_jazz(constant, val1_, q, q_inv);
+		temp__ = montymul_jazz(constant, val1__, q, q_inv);
+		temp___ = montymul_jazz(constant, val1___, q, q_inv);
 		a[index2] = temp;
 		index2 += 1;
 		a[index2] = temp_;
@@ -2291,7 +2265,7 @@ inline fn bigmul_2_jazz(reg ptr u32[256] a, reg ptr u32[256] b) -> reg ptr u32[2
 	return a;
 }
 
-inline fn polySnormSymbreak_2_jazz(reg ptr u16[256] a, reg ptr u32[256] b) -> reg ptr u16[256], reg u32
+inline fn polySnormSymbreak_jazz(reg ptr u16[256] a, reg ptr u32[256] b) -> reg ptr u16[256], reg u32
 {
 	reg u32 x, minus_x, nz, res, r, c, q;
 	inline int u;
@@ -2317,21 +2291,23 @@ inline fn polySnormSymbreak_2_jazz(reg ptr u16[256] a, reg ptr u32[256] b) -> re
 	return a, r;
 }
 
-inline fn unnamed_2_jazz(reg ptr u16[256] s1, reg ptr u8[128] h1buf, reg u32 ps) -> reg ptr u16[256], reg u32
+inline fn unnamed_jazz(reg ptr u16[256] s1, reg ptr u8[128] h1buf, reg u32 ps) -> reg ptr u16[256], reg u32
 {
-	reg u32 nm, z, temp1, y, lim, minus_512;
+	reg u32 nm, z, temp1, y, lim, minus_512, shift;
 	nm = #ASR(ps, 31);
 	nm = #MVN(nm);
 	lim = 512;
 	minus_512 = 4294966784;
 	inline int u;
+
 	for u = 0 to 256
 	{
 		z = (32s)s1.[2*u];
 		z = z ^ nm;
 		z = z - nm;
 		temp1 = (32u)h1buf.[u >> 3];
-		temp1 = temp1 >> (u & 7);
+		shift = u & 7;
+		temp1 = temp1 >> shift;
 		temp1 &= 1;
 		z = z + temp1;
 		y = z >>s 1;
@@ -2342,7 +2318,7 @@ inline fn unnamed_2_jazz(reg ptr u16[256] s1, reg ptr u8[128] h1buf, reg u32 ps)
 	return s1, lim;
 }
 
-inline fn encodeSig_2_jazz(reg u32 buf, reg ptr u32[10] psalt, reg ptr u16[256] s1) -> reg u32
+inline fn encodeSig_jazz(reg u32 buf, reg ptr u32[10] psalt, reg ptr u16[256] s1) -> reg u32
 {
 	reg u32 ret, buf_len, x, temp, temp1, temp2, temp3, temp4, x_low, x_high, w, buf_h, one;
 
@@ -2634,17 +2610,6 @@ inline fn encodeSig_2_jazz(reg u32 buf, reg ptr u32[10] psalt, reg ptr u16[256] 
 	return ret;
 }
 
-inline fn montymul_jazz(reg u32 x y q q_inv) -> reg u32
-{
-    reg u32 tmp0, tmp1;
-
-	x, tmp0 = #SMULL(x, y);
-	tmp1 = #MUL(tmp0, q_inv);
-	_, x = #SMLAL(tmp0, x, tmp1, q);
-
-    return x;
-}
-
 inline fn butterfly_two_layers_jazz(reg u32 s0 s1 s2 x1 x2 x3 x4 q q_inv) -> reg u32, reg u32, reg u32, reg u32
 {
 	reg u32 u;
@@ -2689,7 +2654,7 @@ inline fn inv_butterfly_two_layers_jazz(reg u32 s0 s1 s2 x1 x2 x3 x4 q q_inv) ->
 	return x4, x3, x2, x1;
 }
 
-inline fn NTT_unrolled_for_loop_jazz(reg ptr u32[256] a) -> reg ptr u32[256]
+inline fn NTT_unrolled_jazz(reg ptr u32[256] a) -> reg ptr u32[256]
 {
 	reg u32 x1, x2, x3, x4, q, q_inv, s0, s1, s2;
 
@@ -3767,10 +3732,10 @@ inline fn iNTT_unrolled_jazz(reg ptr u32[256] a) -> reg ptr u32[256]
 		x1, x2, x3, x4 = inv_butterfly_two_layers_jazz(s0, s1, s2, x1, x2, x3, x4, q, q_inv);
 
 		// Scaling the results into the same range as the reference implementation
-		x1 = montymul2_jazz(x1, 12744, q, q_inv); // 3186 = Multiply by 2^(-8) 12744
-		x2 = montymul2_jazz(x2, 12744, q, q_inv); 
-		x3 = montymul2_jazz(x3, 12744, q, q_inv); 
-		x4 = montymul2_jazz(x4, 12744, q, q_inv);
+		x1 = montymul_jazz(x1, 12744, q, q_inv); // 3186 = Multiply by 2^(-8) 12744
+		x2 = montymul_jazz(x2, 12744, q, q_inv); 
+		x3 = montymul_jazz(x3, 12744, q, q_inv); 
+		x4 = montymul_jazz(x4, 12744, q, q_inv);
 		res1 = #SMMUL(x1, r_div_q);
 		x1 = x1 - res1 * q;//temp = #MLS(res, q, temp);
 		res2 = #SMMUL(x2, r_div_q);
@@ -3806,7 +3771,7 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
   	pf = f;
 
     () = #unspill(priv);
-    pf, pg = regenfg8_2_jazz(pf, pg, priv);
+    pf, pg = regenfg8_jazz(pf, pg, priv);
 	() = #spill(pf, pg);
 
 	reg u32 temp;
@@ -3919,18 +3884,18 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 		() = #spill(ph0, ph1);
 
 		() = #unspill(pf2, pf);
-		pf2 = extractLowbit2_jazz(pf2, pf);
+		pf2 = extractLowbit_jazz(pf2, pf);
 		() = #spill(pf2);
 
 		() = #unspill(pg2, pg);
-		pg2 = extractLowbit2_jazz(pg2, pg);
+		pg2 = extractLowbit_jazz(pg2, pg);
 		() = #spill(pg2);
 		
 		stack u8[32] at0;
 		reg ptr u8[32] t0;
 		t0 = at0;
 		() = #unspill(ph0_copy, pf2);
-		t0 = bpMulMod256New2_jazz(t0, ph0_copy, pf2);
+		t0 = bpMulMod256New_jazz(t0, ph0_copy, pf2);
 		() = #spill(t0);
 
 		stack u8[32] aw111;
@@ -3939,27 +3904,27 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 		() = #unspill(ph1, priv);
 		reg ptr u8[32] F2;
 		F2 = priv[16:32];
-		w111 = bpMulMod256New2_jazz(w111, ph1, F2);
+		w111 = bpMulMod256New_jazz(w111, ph1, F2);
 		() = #spill(w111);
 
 		() = #unspill(t0, w111);
-		t0 = bpXor256_2_jazz(t0, t0, w111);
+		t0 = bpXor256_jazz(t0, t0, w111);
 		() = #spill(t0);
 
 		stack u8[32] at1;
 		reg ptr u8[32] t1;
 		t1 = at1;
 		() = #unspill(ph0_copy, pg2);
-		t1 = bpMulMod256New2_jazz(t1, ph0_copy, pg2);
+		t1 = bpMulMod256New_jazz(t1, ph0_copy, pg2);
 		() = #spill(t1);
 
 		() = #unspill(priv, w111, ph1);
 		reg ptr u8[32] G2;
 		G2 = priv[48:32];
-		w111 = bpMulMod256New2_jazz(w111, ph1, G2);
+		w111 = bpMulMod256New_jazz(w111, ph1, G2);
 
 		() = #unspill(t1);
-		t1 = bpXor256_2_jazz(t1, t1, w111);
+		t1 = bpXor256_jazz(t1, t1, w111);
 		() = #spill(t1, w111);
 
 		reg u32 xsn;
@@ -3970,7 +3935,7 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 		t = at;
 		t[0:32] = t0;
 		t[32:32] = t1;
-		x, xsn = sig_gauss_2_jazz(x, phm, priv, t, attempt);
+		x, xsn = sig_gauss_jazz(x, phm, priv, t, attempt);
 		x = x;
 		xsn = xsn;
 		() = #spill(x);
@@ -4012,57 +3977,56 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 		if (should_skip == 0)
 		{
 			() = #unspill(xyz, pg);
-			xyz = polysetsmallinplacelow_2_jazz(xyz, pg);
+			xyz = polysetsmallinplacelow_jazz(xyz, pg);
 
 			() = #unspill(xyz1, xyz2, x0, x);
 			x0 = x[0:256];
 			xyz2 = xyz[256:256];
-			xyz2 = polysetsmallinplacehigh_2_jazz(xyz2, x0);
+			xyz2 = polysetsmallinplacehigh_jazz(xyz2, x0);
 			() = #spill(x0);
 			
-			xyz2 = NTT_unrolled_for_loop_jazz(xyz2);
+			xyz2 = NTT_unrolled_jazz(xyz2);
 			xyz[256:256] = xyz2;
 			() = #spill(xyz2);
 			xyz1 = xyz[0:256];
-			xyz1 = NTT_unrolled_for_loop_jazz(xyz1);
+			xyz1 = NTT_unrolled_jazz(xyz1);
 			xyz[0:256] = xyz1;
 			() = #spill(xyz1);
 			
-
 			() = #unspill(w1_32);
-			w1_32 = improvedMul_2_jazz(w1_32, xyz);
+			w1_32 = improvedMul_jazz(w1_32, xyz);
 			() = #spill(xyz, w1_32);
 
 			() = #unspill(x, w2_32);
 			reg ptr u8[256] x1;
 			x1 = x[256:256];
-			w2_32 = polysetsmall_2_jazz(w2_32, x1);
+			w2_32 = polysetsmall_jazz(w2_32, x1);
 
 			() = #unspill(w3_32, pf);
-			w3_32 = polysetsmallinplacehigh_2_jazz(w3_32, pf);
+			w3_32 = polysetsmallinplacehigh_jazz(w3_32, pf);
 
-			w2_32 = NTT_unrolled_for_loop_jazz(w2_32);
-			w3_32 = NTT_unrolled_for_loop_jazz(w3_32);
+			w2_32 = NTT_unrolled_jazz(w2_32);
+			w3_32 = NTT_unrolled_jazz(w3_32);
 			() = #unspill(w2_3_32);
 			w2_3_32[0:256] = w2_32;
 			w2_3_32[256:256] = w3_32;
 			() = #spill(w2_32);			
 
-			w3_32 = improvedMul_2_jazz(w3_32, w2_3_32);
+			w3_32 = improvedMul_jazz(w3_32, w2_3_32);
 			() = #spill(w2_3_32);
 			
 			() = #unspill(w1_32);
-			w3_32 = bigmul_2_jazz(w3_32, w1_32);
+			w3_32 = bigmul_jazz(w3_32, w1_32);
 
 			() = #unspill(res);
 			w3_32 = iNTT_unrolled_jazz(w3_32);
 
-			res, ps = polySnormSymbreak_2_jazz(res, w3_32);
+			res, ps = polySnormSymbreak_jazz(res, w3_32);
 			() = #spill(w3_32);
 
 			() = #unspill(h1buf);
 			ps -= 1;
-			res, lim = unnamed_2_jazz(res, h1buf, ps);
+			res, lim = unnamed_jazz(res, h1buf, ps);
 			() = #spill(res);
 
 			reg u32 should_skip2;
@@ -4074,7 +4038,7 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 			//if (lim == 0)
 			{
 				() = #unspill(pf, pg, priv);
-				pf, pg = regenfg8_2_jazz(pf, pg, priv);
+				pf, pg = regenfg8_jazz(pf, pg, priv);
 				() = #spill(pf, pg);
 				should_skip2 = 1;
 			}
@@ -4082,7 +4046,7 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 			if (should_skip2 == 0)
 			{
 				() = #unspill(sig, psalt, cond);
-				lim = encodeSig_2_jazz(sig, psalt, res);
+				lim = encodeSig_jazz(sig, psalt, res);
 				if (lim == 1)
 				{
 					cond = 0; 
@@ -4091,7 +4055,7 @@ export fn sign_finish_inner_jazz(#public reg u32 sig, #public reg u32 sm, #secre
 				else 
 				{
 					() = #unspill(pf, pg, priv);
-					pf, pg = regenfg8_2_jazz(pf, pg, priv);
+					pf, pg = regenfg8_jazz(pf, pg, priv);
 					() = #spill(pf, pg);
 				}
 			}
