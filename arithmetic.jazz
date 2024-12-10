@@ -1,6 +1,6 @@
-require "libjade-dilithium-arm/src/libjade/dilithium5/keccakf1600_pqm4.jinc"
+require "ext/keccakf1600_pqm4.jinc"
 require "arrays.jinc"
-require "libjade-dilithium-arm/src/libjade/dilithium5/fips202.jinc"
+require "ext/fips202.jinc"
 
 inline fn montyR(reg u32 r0 r1 q) -> reg u32
 {
